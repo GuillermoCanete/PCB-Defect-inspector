@@ -1,0 +1,5 @@
+{
+  "name": "PCB Defect Inspector Pro",
+  "description": "Industrial PCB quality control tool for tracking and counting defects on Side A and Side B of circuit boards, featuring custom component markers and right-click defect mapping.",
+  "requestFramePermissions": []
+}
