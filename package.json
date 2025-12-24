@@ -1,8 +1,7 @@
-
 {
   "name": "pcb-defect-inspector-pro",
   "private": true,
-  "version": "11.1.0",
+  "version": "11.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
