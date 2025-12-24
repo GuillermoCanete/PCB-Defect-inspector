@@ -17,6 +17,7 @@ const App: React.FC = () => {
   
   // Modals / State
   const [showNewBoardModal, setShowNewBoardModal] = useState(false);
+  const [showConfirmDeleteHistory, setShowConfirmDeleteHistory] = useState(false);
   const [newBoardData, setNewBoardData] = useState({ name: '', imageA: '', imageB: '' });
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, imgX: number, imgY: number } | null>(null);
   const [showCompDialog, setShowCompDialog] = useState<{ imgX: number, imgY: number } | null>(null);
@@ -26,7 +27,8 @@ const App: React.FC = () => {
   const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(null);
 
   const imageRef = useRef<HTMLImageElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const detailRef = useRef<HTMLDivElement>(null);
+  const importFileRef = useRef<HTMLInputElement>(null);
 
   const currentBoard = useMemo(() => {
     if (!activeBoardId || boards.length === 0) return null;
@@ -60,6 +62,8 @@ const App: React.FC = () => {
     const nextSide = currentSide === 'A' ? 'B' : 'A';
     setCurrentSide(nextSide);
     setActiveCompDetail(null);
+    setContextMenu(null);
+    setSelectedMarkerId(null);
   };
 
   const handleBoardSwitch = (id: string) => {
@@ -102,7 +106,11 @@ const App: React.FC = () => {
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
-    if (!imageRef.current || !currentBoard || showHeatmap || isEditMode) return;
+    if (!imageRef.current || !currentBoard || isEditMode) return;
+    
+    setActiveCompDetail(null);
+    setSelectedMarkerId(null);
+
     const rect = imageRef.current.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 100;
     const y = ((e.clientY - rect.top) / rect.height) * 100;
@@ -110,7 +118,7 @@ const App: React.FC = () => {
   };
 
   const handleImageClick = (e: React.MouseEvent) => {
-    if (!imageRef.current || !currentBoard || showHeatmap) return;
+    if (!imageRef.current || !currentBoard) return;
     const rect = imageRef.current.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 100;
     const y = ((e.clientY - rect.top) / rect.height) * 100;
@@ -143,7 +151,8 @@ const App: React.FC = () => {
       y: showCompDialog.imgY,
       side: currentSide,
       counts: { faltante: 0, malInsertado: 0, equivocado: 0, levantado: 0, invertido: 0 },
-      history: []
+      history: [],
+      scale: 1
     };
     updateBoard({ ...currentBoard, components: [...currentBoard.components, newComp] });
     setShowCompDialog(null);
@@ -164,13 +173,19 @@ const App: React.FC = () => {
         } : c
       )
     });
+    setActiveCompDetail(null);
   };
 
   const handleMarkerResize = (id: string, delta: number, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!currentBoard) return;
-    const update = (list: any[]) => list.map(item => item.id === id ? { ...item, scale: Math.max(0.5, Math.min(3, (item.scale || 1) + delta)) } : item);
-    updateBoard({ ...currentBoard, components: update(currentBoard.components), genericMarkers: update(currentBoard.genericMarkers) });
+    const updateComp = currentBoard.components.map(c => 
+      c.id === id ? { ...c, scale: Math.max(0.5, Math.min(3, (c.scale || 1) + delta)) } : c
+    );
+    const updateGen = currentBoard.genericMarkers.map(m => 
+      m.id === id ? { ...m, scale: Math.max(0.5, Math.min(3, (m.scale || 1) + delta)) } : m
+    );
+    updateBoard({ ...currentBoard, components: updateComp, genericMarkers: updateGen });
   };
 
   const deleteMarker = (id: string, e: React.MouseEvent) => {
@@ -205,32 +220,62 @@ const App: React.FC = () => {
     });
   };
 
-  const stats = useMemo(() => {
-    if (!currentBoard) return [];
-    const list = currentBoard.components.map(c => ({ name: c.name, total: Object.values(c.counts).reduce((a, b) => a + b, 0), type: 'component' }));
-    const generics = currentBoard.genericMarkers.map(m => ({ name: m.type, total: m.count, type: 'generic' }));
-    return [...list, ...generics].sort((a, b) => b.total - a.total);
-  }, [currentBoard]);
-
-  const maxTotal = Math.max(...stats.map(s => s.total), 1);
-  const getHeatColor = (count: number) => {
-    const ratio = count / maxTotal;
-    if (ratio > 0.7) return 'rgba(220, 38, 38, 0.9)';
-    if (ratio > 0.4) return 'rgba(249, 115, 22, 0.8)';
-    return 'rgba(34, 197, 94, 0.8)';
+  const clearVisualCounters = () => {
+    if (!currentBoard) return;
+    updateBoard({
+      ...currentBoard,
+      components: currentBoard.components.map(c => ({
+        ...c,
+        counts: { faltante: 0, malInsertado: 0, equivocado: 0, levantado: 0, invertido: 0 }
+      })),
+      genericMarkers: currentBoard.genericMarkers.map(m => ({ ...m, count: 0 }))
+    });
+    setActiveCompDetail(null);
   };
 
-  const exportToXLS = () => {
+  const deleteFullHistory = () => {
     if (!currentBoard) return;
-    const headers = ["Fecha", "Hora", "Componente", "Tipo", "Lado", "Categoría"];
-    const rows: string[][] = [];
-    currentBoard.components.forEach(comp => comp.history.forEach(ev => rows.push([new Date(ev.timestamp).toLocaleDateString(), new Date(ev.timestamp).toLocaleTimeString(), comp.name, ev.type, comp.side, "Componente"])));
-    currentBoard.genericMarkers.forEach(mark => mark.history.forEach(ts => rows.push([new Date(ts).toLocaleDateString(), new Date(ts).toLocaleTimeString(), mark.type, mark.type, mark.side, "Genérico"])));
-    const csvContent = "\uFEFF" + [headers, ...rows].map(e => e.join(";")).join("\n");
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(new Blob([csvContent], { type: 'text/csv;charset=utf-8;' }));
-    link.download = `${currentBoard.name.replace(/\s+/g, '_')}_Reporte.csv`;
-    link.click();
+    updateBoard({
+      ...currentBoard,
+      components: currentBoard.components.map(c => ({
+        ...c,
+        counts: { faltante: 0, malInsertado: 0, equivocado: 0, levantado: 0, invertido: 0 },
+        history: []
+      })),
+      genericMarkers: currentBoard.genericMarkers.map(m => ({
+        ...m,
+        count: 0,
+        history: []
+      }))
+    });
+    setShowConfirmDeleteHistory(false);
+    setActiveCompDetail(null);
+  };
+
+  const stats = useMemo(() => {
+    if (!currentBoard) return [];
+    const list = currentBoard.components
+      .filter(c => c.side === currentSide)
+      .map(c => ({ name: c.name, total: Object.values(c.counts).reduce((a, b) => a + b, 0), type: 'component' }));
+    const generics = currentBoard.genericMarkers
+      .filter(m => m.side === currentSide)
+      .map(m => ({ name: m.type, total: m.count, type: 'generic' }));
+    return [...list, ...generics].filter(s => s.total > 0).sort((a, b) => b.total - a.total);
+  }, [currentBoard, currentSide]);
+
+  const maxFailsSide = useMemo(() => {
+    const totalFails = stats.map(s => s.total);
+    return totalFails.length > 0 ? Math.max(...totalFails) : 1;
+  }, [stats]);
+
+  const getHeatColor = (count: number) => {
+    if (count <= 0) return '';
+    if (count === 1) return 'rgb(34, 197, 94)';
+    const ratio = Math.min(1, (count - 1) / Math.max(1, maxFailsSide - 1));
+    const red = Math.round(34 + (239 - 34) * ratio);
+    const green = Math.round(197 + (68 - 197) * ratio);
+    const blue = Math.round(94 + (68 - 94) * ratio);
+    return `rgb(${red}, ${green}, ${blue})`;
   };
 
   const currentImg = useMemo(() => {
@@ -238,167 +283,270 @@ const App: React.FC = () => {
     return currentSide === 'A' ? currentBoard.imageA : currentBoard.imageB;
   }, [currentBoard, currentSide]);
 
+  const exportBoardConfig = () => {
+    if (!currentBoard) return alert("Seleccione una placa para exportar.");
+    const configOnly: Board = {
+      ...currentBoard,
+      components: currentBoard.components.map(c => ({
+        ...c,
+        counts: { faltante: 0, malInsertado: 0, equivocado: 0, levantado: 0, invertido: 0 },
+        history: []
+      })),
+      genericMarkers: currentBoard.genericMarkers.map(m => ({ ...m, count: 0, history: [] }))
+    };
+    const now = new Date();
+    const dateStr = now.toLocaleDateString().replace(/\//g, '-');
+    const timeStr = now.toLocaleTimeString().replace(/:/g, '-');
+    const filename = `CONFIG_${currentBoard.name.replace(/\s+/g, '_')}_${dateStr}_${timeStr}.json`;
+    const dataStr = JSON.stringify(configOnly, null, 2);
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportToExcel = () => {
+    if (!currentBoard) return alert("Seleccione una placa para exportar.");
+    const now = new Date();
+    const dateStr = now.toLocaleDateString().replace(/\//g, '-');
+    const timeStr = now.toLocaleTimeString().replace(/:/g, '-');
+    const filename = `LOG_${currentBoard.name.replace(/\s+/g, '_')}_${dateStr}_${timeStr}.csv`;
+    const headers = ['Fecha', 'Hora', 'Nombre de Placa', 'Elemento', 'Lado', 'Tipo de Defecto'];
+    const eventRows: string[][] = [];
+    currentBoard.components.forEach(c => {
+      c.history.forEach(event => {
+        const d = new Date(event.timestamp);
+        eventRows.push([d.toLocaleDateString(), d.toLocaleTimeString(), currentBoard.name, c.name, c.side, event.type.toUpperCase()]);
+      });
+    });
+    currentBoard.genericMarkers.forEach(m => {
+      m.history.forEach(ts => {
+        const d = new Date(ts);
+        eventRows.push([d.toLocaleDateString(), d.toLocaleTimeString(), currentBoard.name, m.type, m.side, 'FALLA GENÉRICA']);
+      });
+    });
+    const csvContent = "\ufeff" + [headers.join(';'), ...eventRows.map(r => r.join(';'))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportConfig = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const importedBoard = JSON.parse(event.target?.result as string) as Board;
+        if (!importedBoard.name || !Array.isArray(importedBoard.components)) throw new Error("Invalido");
+        const newBoard: Board = { ...importedBoard, id: Math.random().toString(36).substr(2, 9), createdAt: Date.now() };
+        setBoards(prev => [...prev, newBoard]);
+        setActiveBoardId(newBoard.id);
+      } catch (err) { alert("Error al importar JSON."); }
+    };
+    reader.readAsText(file);
+    e.target.value = ''; 
+  };
+
+  // Improved detail positioning logic to respect image bounds
+  const [detailPos, setDetailPos] = useState({ x: 'right', y: 'bottom' });
+  useEffect(() => {
+    if (activeCompDetail && detailRef.current && imageRef.current) {
+      const rect = detailRef.current.getBoundingClientRect();
+      const imgRect = imageRef.current.getBoundingClientRect();
+      const newPos = { ...detailPos };
+      
+      // Horizontal check
+      if (rect.right > imgRect.right - 10) newPos.x = 'left';
+      else if (rect.left < imgRect.left + 10) newPos.x = 'right';
+      
+      // Vertical check
+      if (rect.bottom > imgRect.bottom - 10) newPos.y = 'top';
+      else if (rect.top < imgRect.top + 10) newPos.y = 'bottom';
+      
+      setDetailPos(newPos);
+    }
+  }, [activeCompDetail]);
+
   return (
     <div className="h-screen w-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden font-sans">
       <header className="h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-6 z-50 shrink-0 shadow-xl">
         <div className="flex items-center gap-4">
+          <button onClick={() => setShowStats(!showStats)} title="Estadísticas" className={`w-9 h-9 rounded-md flex items-center justify-center transition-all ${showStats ? 'bg-blue-600' : 'bg-slate-800 border border-slate-700'}`}>
+            <i className="fa-solid fa-chart-simple text-sm"></i>
+          </button>
           <div className="flex items-center gap-2">
             <div className="w-9 h-9 bg-blue-600 rounded-lg flex items-center justify-center shadow-lg">
                 <i className="fa-solid fa-microchip text-white"></i>
             </div>
             <span className="font-black text-xl tracking-tighter uppercase">PCB<span className="text-blue-500">PRO</span></span>
           </div>
-          <select 
-              className="bg-slate-800 border border-slate-700 rounded-md px-3 py-1.5 text-[11px] font-bold outline-none cursor-pointer min-w-[140px]"
-              value={activeBoardId || ''}
-              onChange={(e) => handleBoardSwitch(e.target.value)}
-          >
-              <option value="" disabled>Seleccionar Placa</option>
-              {boards.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-          </select>
+          <div className="flex items-center gap-1 bg-slate-800 p-0.5 rounded-md border border-slate-700">
+            <select 
+                className="bg-transparent px-3 py-1 text-[11px] font-bold outline-none cursor-pointer min-w-[140px]"
+                value={activeBoardId || ''}
+                onChange={(e) => handleBoardSwitch(e.target.value)}
+            >
+                <option value="" disabled>Seleccionar Placa</option>
+                {boards.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+            <div className="w-px h-4 bg-slate-700 mx-1"></div>
+            <button onClick={exportToExcel} title="Exportar Reporte Excel" className="p-2 hover:text-green-400 transition-colors"><i className="fa-solid fa-file-excel text-xs"></i></button>
+            <button onClick={exportBoardConfig} title="Exportar Configuración JSON" className="p-2 hover:text-blue-400 transition-colors"><i className="fa-solid fa-download text-xs"></i></button>
+            <button onClick={() => importFileRef.current?.click()} title="Importar Configuración" className="p-2 hover:text-blue-400 transition-colors"><i className="fa-solid fa-upload text-xs"></i></button>
+            <input type="file" hidden ref={importFileRef} accept=".json" onChange={handleImportConfig} />
+          </div>
           <button onClick={() => setShowNewBoardModal(true)} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-md text-[10px] font-black uppercase transition-all flex items-center gap-2 shadow-lg">
               <i className="fa-solid fa-plus"></i> NUEVA
           </button>
         </div>
 
         <div className="flex items-center bg-black/40 p-1 rounded-xl gap-2 border border-white/5">
-            <button 
-              onClick={toggleSide} 
-              className={`flex items-center gap-3 px-6 py-2.5 rounded-lg text-xs font-black transition-all shadow-lg ${currentSide === 'A' ? 'bg-indigo-600' : 'bg-purple-600'}`}
-            >
+            <button onClick={toggleSide} className={`flex items-center gap-3 px-6 py-2.5 rounded-lg text-xs font-black transition-all shadow-lg ${currentSide === 'A' ? 'bg-indigo-600' : 'bg-purple-600'}`}>
               <i className="fa-solid fa-rotate"></i>
-              <span>VER LADO {currentSide === 'A' ? 'B' : 'A'}</span>
-              <span className="bg-black/30 px-2 py-0.5 rounded text-[10px]">LADO {currentSide} ACTIVO</span>
+              <span>LADO {currentSide}</span>
             </button>
             <div className="w-px h-6 bg-slate-800"></div>
-            <button onClick={() => {setIsAddingComponent(!isAddingComponent); setIsEditMode(false);}} className={`px-4 py-2.5 rounded-lg text-[10px] font-black transition-all flex items-center gap-2 ${isAddingComponent ? 'bg-orange-600 animate-pulse' : 'bg-slate-800 text-slate-400'}`}>
+            <button onClick={() => {setIsAddingComponent(!isAddingComponent); setIsEditMode(false); setContextMenu(null); setActiveCompDetail(null);}} className={`px-4 py-2.5 rounded-lg text-[10px] font-black transition-all flex items-center gap-2 ${isAddingComponent ? 'bg-orange-600 animate-pulse' : 'bg-slate-800 text-slate-400'}`}>
               <i className="fa-solid fa-plus-circle"></i> COMPONENTE
             </button>
         </div>
 
         <div className="flex items-center gap-2">
-          <button onClick={() => {setIsEditMode(!isEditMode); setIsAddingComponent(false);}} className={`px-3 py-1.5 rounded-md text-[10px] font-black border transition-all flex items-center gap-2 ${isEditMode ? 'bg-yellow-600 border-yellow-400' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
+          <button onClick={clearVisualCounters} title="Limpiar conteos visuales (Mantiene historial)" className="px-3 py-1.5 rounded-md text-[10px] font-black bg-slate-800 border border-slate-700 hover:border-yellow-500 transition-all flex items-center gap-2">
+            <i className="fa-solid fa-broom text-yellow-500"></i> LIMPIAR VISTA
+          </button>
+          <button onClick={() => setShowConfirmDeleteHistory(true)} title="Eliminar todo el historial de fallas" className="px-3 py-1.5 rounded-md text-[10px] font-black bg-slate-800 border border-slate-700 hover:border-red-500 transition-all flex items-center gap-2">
+            <i className="fa-solid fa-trash-can text-red-500"></i> RESET LOG
+          </button>
+          <button onClick={() => setShowHeatmap(!showHeatmap)} className={`px-3 py-1.5 rounded-md text-[10px] font-black border transition-all flex items-center gap-2 ${showHeatmap ? 'bg-red-600 border-red-400' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
+            <i className="fa-solid fa-fire"></i> CALOR
+          </button>
+          <button onClick={() => {setIsEditMode(!isEditMode); setIsAddingComponent(false); setContextMenu(null); setActiveCompDetail(null);}} className={`px-3 py-1.5 rounded-md text-[10px] font-black border transition-all flex items-center gap-2 ${isEditMode ? 'bg-yellow-600 border-yellow-400' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
             <i className="fa-solid fa-screwdriver-wrench"></i> EDITAR
-          </button>
-          <button onClick={exportToXLS} className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 rounded-md text-[10px] font-black uppercase transition-all flex items-center gap-2 shadow-lg">
-            <i className="fa-solid fa-file-excel"></i> XLS
-          </button>
-          <button onClick={() => setShowStats(!showStats)} className={`w-9 h-9 rounded-md flex items-center justify-center transition-all ${showStats ? 'bg-blue-600' : 'bg-slate-800 border border-slate-700'}`}>
-            <i className="fa-solid fa-chart-simple text-sm"></i>
           </button>
         </div>
       </header>
 
       <div className="flex-1 flex overflow-hidden relative">
-        <main className={`flex-1 relative flex flex-col transition-all duration-300 ${showStats ? 'mr-72' : 'mr-0'}`}>
-          {(isAddingComponent || isEditMode) && (
-             <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[60] px-6 py-2 bg-yellow-600 text-white text-[11px] font-black rounded-full shadow-2xl flex items-center gap-3 animate-bounce">
-                <i className="fa-solid fa-info-circle"></i>
-                {isAddingComponent ? "HAGA CLIC PARA UBICAR COMPONENTE" : "MODO CONFIGURACIÓN: REUBIQUE ELEMENTOS"}
-             </div>
-          )}
+        <aside className={`fixed left-0 top-16 bottom-0 bg-slate-900 border-r border-slate-800 transition-all duration-500 z-30 flex flex-col ${showStats ? 'w-72 shadow-2xl' : 'w-0 overflow-hidden'}`}>
+          <div className="p-4 border-b border-slate-800 bg-slate-900/80 backdrop-blur-md">
+            <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2"><i className="fa-solid fa-ranking-star text-blue-500"></i> Ranking Lado {currentSide}</h3>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
+            {stats.length === 0 ? <div className="flex flex-col items-center justify-center h-full opacity-20 text-center px-4"><p className="text-[10px] font-black uppercase tracking-widest">Placa Limpia</p></div> : stats.map((s, idx) => (
+              <div key={idx} className="bg-slate-800/40 p-3 rounded-xl border border-slate-700/30 flex justify-between items-center animate-in">
+                <div className="flex items-center gap-3">
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-black text-[9px] ${s.type === 'generic' ? 'bg-emerald-600/20 text-emerald-400' : 'bg-blue-600/20 text-blue-400'}`}>{s.name.substring(0, 3).toUpperCase()}</div>
+                  <span className="text-[11px] font-bold text-slate-300">{s.name}</span>
+                </div>
+                <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full shadow-sm" style={{ backgroundColor: getHeatColor(s.total) }}></div><div className="text-sm font-black text-white">{s.total}</div></div>
+              </div>
+            ))}
+          </div>
+        </aside>
 
+        <main className={`flex-1 relative flex flex-col transition-all duration-300 ${showStats ? 'ml-72' : 'ml-0'}`}>
           <div className="flex-1 relative flex items-center justify-center p-8 bg-black overflow-hidden" onClick={handleImageClick} onContextMenu={handleContextMenu}>
             {!currentBoard ? (
-              <div className="flex flex-col items-center gap-6 opacity-30">
-                <i className="fa-solid fa-microchip text-[120px]"></i>
-                <h2 className="text-2xl font-black uppercase tracking-widest">Cargue una placa para empezar</h2>
-              </div>
+              <div className="flex flex-col items-center gap-6 opacity-30 animate-pulse"><i className="fa-solid fa-microchip text-[120px]"></i><h2 className="text-2xl font-black uppercase tracking-widest">Seleccione Proyecto</h2></div>
             ) : !currentImg ? (
-              <div className="bg-slate-900/50 border-4 border-dashed border-slate-800 p-16 rounded-[4rem] flex flex-col items-center gap-6 text-center">
-                <i className="fa-solid fa-image text-8xl text-slate-800"></i>
-                <h3 className="text-xl font-black text-slate-500 uppercase">Sin foto para el LADO {currentSide}</h3>
-                <p className="text-slate-600 text-[11px] font-bold">Añada la imagen en la configuración de la placa.</p>
-              </div>
+              <div className="bg-slate-900/50 border-4 border-dashed border-slate-800 p-16 rounded-[4rem] flex flex-col items-center gap-6 text-center"><h3 className="text-xl font-black text-slate-500 uppercase">Falta Imagen Lado {currentSide}</h3></div>
             ) : (
-              <div className="relative inline-block max-w-full max-h-full">
-                <img ref={imageRef} src={currentImg} alt="PCB" className="max-w-full max-h-[calc(100vh-140px)] object-contain rounded-lg shadow-2xl" draggable={false} />
+              <div className="relative inline-block max-w-full max-h-full select-none">
+                <img ref={imageRef} src={currentImg} alt="PCB" className={`max-w-full max-h-[calc(100vh-140px)] object-contain rounded-lg shadow-2xl transition-all duration-700 ${showHeatmap ? 'grayscale saturate-[0.15] brightness-[1.1]' : ''}`} draggable={false} />
 
                 {currentBoard.components.filter(c => c.side === currentSide).map(comp => {
                   const total = Object.values(comp.counts).reduce((a, b) => a + b, 0);
                   const isSelected = selectedMarkerId === comp.id;
+                  const isActive = activeCompDetail === comp.id;
+                  const heatColor = getHeatColor(total);
+
                   return (
-                    <div key={comp.id} style={{ left: `${comp.x}%`, top: `${comp.y}%`, transform: `translate(-50%, -50%) scale(${comp.scale || 1})` }} className="absolute z-20" onClick={(e) => { e.stopPropagation(); if(isEditMode) setSelectedMarkerId(comp.id); else setActiveCompDetail(comp.id); }}>
-                      <div className={`w-10 h-10 rounded-full border-2 flex flex-col items-center justify-center transition-all cursor-pointer shadow-2xl ${isSelected ? 'border-yellow-400 scale-110' : 'border-white/40'} ${comp.type === 'IA' ? 'bg-blue-600' : 'bg-purple-600'}`}>
-                        <span className="text-[9px] font-black text-white leading-none mb-0.5">{comp.name.substring(0,4)}</span>
-                        {total > 0 && <div className="absolute -top-2 -right-2 bg-red-600 text-[9px] font-black w-5 h-5 rounded-full flex items-center justify-center border-2 border-slate-900">{total}</div>}
+                    <div key={comp.id} style={{ left: `${comp.x}%`, top: `${comp.y}%`, transform: `translate(-50%, -50%) scale(${comp.scale || 1})` }} className={`absolute ${isActive || isSelected ? 'z-40' : 'z-20'}`} onClick={(e) => { e.stopPropagation(); if(isEditMode) setSelectedMarkerId(comp.id); else { setActiveCompDetail(comp.id); setContextMenu(null); } }}>
+                      {showHeatmap && total > 0 && <div className="absolute inset-0 -m-10 rounded-full blur-3xl opacity-70 animate-pulse" style={{ background: `radial-gradient(circle, ${heatColor} 0%, transparent 70%)` }} />}
+                      <div className={`relative w-10 h-10 rounded-full border-2 flex flex-col items-center justify-center transition-all cursor-pointer shadow-2xl ${isSelected ? 'border-yellow-400 scale-125 ring-2 ring-yellow-400/30' : 'border-white/40'} ${comp.type === 'IA' ? 'bg-blue-600' : 'bg-purple-600'} ${showHeatmap ? 'bg-opacity-100' : 'bg-opacity-50'} backdrop-blur-[1px]`} style={showHeatmap && total > 0 ? { backgroundColor: heatColor } : {}}>
+                        <span className="text-[9px] font-black text-white leading-none mb-0.5 drop-shadow-md">{comp.name.substring(0,4)}</span>
+                        {total > 0 && <div className="absolute -top-2.5 -right-2.5 bg-red-600 text-[10px] font-black w-6 h-6 rounded-full flex items-center justify-center border-2 border-slate-900 shadow-lg">{total}</div>}
                       </div>
 
-                      {activeCompDetail === comp.id && (
-                        <div className="absolute left-full ml-4 top-0 bg-slate-900 border border-slate-700 rounded-2xl p-4 shadow-2xl w-56 z-[60]" onClick={e => e.stopPropagation()}>
-                          <div className="flex justify-between items-center mb-4 border-b border-slate-800 pb-2">
-                            <span className="text-[10px] font-black text-blue-400 uppercase">{comp.name}</span>
-                            <button onClick={() => setActiveCompDetail(null)} className="text-slate-500 hover:text-white"><i className="fa-solid fa-xmark"></i></button>
-                          </div>
-                          <div className="grid gap-1.5">
-                            {DEFECT_TYPES.map(d => (
-                              <button key={d.id} onClick={(e) => updateDefect(comp.id, d.id as any, e)} className={`flex justify-between items-center ${d.color} hover:brightness-110 px-3 py-2 rounded-xl text-[9px] font-black`}>
-                                <span>{d.label}</span>
-                                <span className="bg-black/40 px-1.5 py-0.5 rounded">{comp.counts[d.id as keyof DefectCounts]}</span>
-                              </button>
-                            ))}
-                          </div>
+                      {isActive && (
+                        <div ref={detailRef} className={`absolute ${detailPos.x === 'right' ? 'left-full ml-5' : 'right-full mr-5'} ${detailPos.y === 'bottom' ? 'top-0' : 'bottom-0'} bg-slate-900 border border-slate-700 rounded-2xl p-4 shadow-[0_10px_50px_rgba(0,0,0,0.6)] w-56 z-[70] animate-in ring-1 ring-white/10`} onClick={e => e.stopPropagation()}>
+                          <div className="flex justify-between items-center mb-4 border-b border-slate-800 pb-2"><span className="text-[10px] font-black text-blue-400 uppercase tracking-widest">{comp.name}</span><button onClick={() => setActiveCompDetail(null)} className="text-slate-500 hover:text-white"><i className="fa-solid fa-xmark"></i></button></div>
+                          <div className="grid gap-2">{DEFECT_TYPES.map(d => (
+                              <button key={d.id} onClick={(e) => updateDefect(comp.id, d.id as any, e)} className={`flex justify-between items-center ${d.color} hover:brightness-125 px-3 py-2.5 rounded-xl text-[10px] font-black transition-all active:scale-95 shadow-md`}><span>{d.label}</span><span className="bg-black/40 px-2 py-0.5 rounded-lg">{comp.counts[d.id as keyof DefectCounts]}</span></button>
+                            ))}</div>
+                        </div>
+                      )}
+                      
+                      {isEditMode && isSelected && (
+                        <div className="absolute -bottom-14 left-1/2 -translate-x-1/2 flex gap-1.5 bg-slate-900 rounded-full p-1.5 border border-white/20 shadow-2xl animate-in">
+                          <button onClick={(e) => handleMarkerResize(comp.id, -0.1, e)} className="w-8 h-8 flex items-center justify-center bg-slate-800 hover:bg-red-500 rounded-full text-xs"><i className="fa-solid fa-minus"></i></button>
+                          <button onClick={(e) => handleMarkerResize(comp.id, 0.1, e)} className="w-8 h-8 flex items-center justify-center bg-slate-800 hover:bg-green-500 rounded-full text-xs"><i className="fa-solid fa-plus"></i></button>
+                          <button onClick={(e) => deleteMarker(comp.id, e)} className="w-8 h-8 flex items-center justify-center bg-slate-800 hover:bg-red-600 rounded-full text-xs"><i className="fa-solid fa-trash"></i></button>
                         </div>
                       )}
                     </div>
                   );
                 })}
 
-                {currentBoard.genericMarkers.filter(m => m.side === currentSide).map(mark => (
-                    <div key={mark.id} style={{ left: `${mark.x}%`, top: `${mark.y}%`, transform: `translate(-50%, -50%) scale(${mark.scale || 1})` }} className="absolute z-20" onClick={(e) => { e.stopPropagation(); if(isEditMode) setSelectedMarkerId(mark.id); else incrementGeneric(mark.id, e); }}>
-                      <div className={`w-9 h-9 rounded-xl flex items-center justify-center shadow-2xl border-2 ${selectedMarkerId === mark.id ? 'border-yellow-400 scale-110' : 'border-white/20'} ${mark.type === 'Corto' ? 'bg-emerald-600' : 'bg-cyan-600'}`}>
-                        <i className={`fa-solid ${mark.type === 'Corto' ? 'fa-bolt' : 'fa-droplet'} text-sm text-white`}></i>
-                        <div className="absolute -bottom-1.5 -right-1.5 bg-black text-[10px] font-black px-2 py-0.5 rounded-full border border-slate-700">{mark.count}</div>
-                      </div>
-                    </div>
-                ))}
+                {currentBoard.genericMarkers.filter(m => m.side === currentSide).map(mark => {
+                    const isSelected = selectedMarkerId === mark.id;
+                    const heatColor = getHeatColor(mark.count);
+                    return (
+                        <div key={mark.id} style={{ left: `${mark.x}%`, top: `${mark.y}%`, transform: `translate(-50%, -50%) scale(${mark.scale || 1})` }} className={`absolute ${isSelected ? 'z-40' : 'z-20'}`} onClick={(e) => { e.stopPropagation(); if(isEditMode) setSelectedMarkerId(mark.id); else { incrementGeneric(mark.id, e); setContextMenu(null); setActiveCompDetail(null); } }}>
+                          {showHeatmap && mark.count > 0 && <div className="absolute inset-0 -m-10 rounded-full blur-3xl opacity-70 animate-pulse" style={{ background: `radial-gradient(circle, ${heatColor} 0%, transparent 70%)` }} />}
+                          <div className={`relative w-9 h-9 rounded-xl flex items-center justify-center shadow-2xl border-2 ${isSelected ? 'border-yellow-400 scale-125 ring-2 ring-yellow-400/30' : 'border-white/20'} ${mark.type === 'Corto' ? 'bg-emerald-600' : 'bg-cyan-600'} ${showHeatmap ? 'bg-opacity-100' : 'bg-opacity-50'} backdrop-blur-[1px]`} style={showHeatmap && mark.count > 0 ? { backgroundColor: heatColor } : {}}><i className={`fa-solid ${mark.type === 'Corto' ? 'fa-bolt' : 'fa-droplet'} text-sm text-white drop-shadow-md`}></i><div className="absolute -bottom-2 -right-2 bg-black text-[10px] font-black px-2 py-0.5 rounded-full border border-slate-700 shadow-md">{mark.count}</div></div>
+                          {isEditMode && isSelected && (
+                            <div className="absolute -bottom-14 left-1/2 -translate-x-1/2 flex gap-1.5 bg-slate-900 rounded-full p-1.5 border border-white/20 shadow-2xl animate-in">
+                                <button onClick={(e) => handleMarkerResize(mark.id, -0.1, e)} className="w-8 h-8 flex items-center justify-center bg-slate-800 hover:bg-red-500 rounded-full text-xs"><i className="fa-solid fa-minus"></i></button>
+                                <button onClick={(e) => handleMarkerResize(mark.id, 0.1, e)} className="w-8 h-8 flex items-center justify-center bg-slate-800 hover:bg-green-500 rounded-full text-xs"><i className="fa-solid fa-plus"></i></button>
+                                <button onClick={(e) => deleteMarker(mark.id, e)} className="w-8 h-8 flex items-center justify-center bg-slate-800 hover:bg-red-600 rounded-full text-xs"><i className="fa-solid fa-trash"></i></button>
+                            </div>
+                          )}
+                        </div>
+                    );
+                })}
               </div>
             )}
           </div>
         </main>
-
-        <aside className={`fixed right-0 top-16 bottom-0 bg-slate-900 border-l border-slate-800 transition-all duration-500 z-30 flex flex-col ${showStats ? 'w-72 shadow-2xl' : 'w-0 overflow-hidden'}`}>
-          <div className="p-4 border-b border-slate-800 bg-slate-900/80 backdrop-blur-md">
-            <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2"><i className="fa-solid fa-ranking-star text-blue-500"></i> Ranking de Fallas</h3>
-          </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-2">
-            {stats.map((s, idx) => (
-              <div key={idx} className="bg-slate-800/40 p-3 rounded-xl border border-slate-700/30 flex justify-between items-center">
-                <div className="flex items-center gap-3">
-                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-black text-[9px] ${s.type === 'generic' ? 'bg-emerald-600/20 text-emerald-400' : 'bg-blue-600/20 text-blue-400'}`}>{s.name.substring(0, 3).toUpperCase()}</div>
-                  <span className="text-[11px] font-bold text-slate-300">{s.name}</span>
-                </div>
-                <div className="text-sm font-black text-white">{s.total}</div>
-              </div>
-            ))}
-          </div>
-        </aside>
       </div>
 
       {showNewBoardModal && (
-        <div className="fixed inset-0 z-[100] bg-slate-950/95 backdrop-blur-xl flex items-center justify-center p-6">
-          <div className="bg-slate-900 border border-slate-800 p-8 rounded-[3rem] shadow-2xl w-full max-w-2xl">
+        <div className="fixed inset-0 z-[100] bg-slate-950/95 backdrop-blur-xl flex items-center justify-center p-6" onClick={() => setShowNewBoardModal(false)}>
+          <div className="bg-slate-900 border border-slate-800 p-8 rounded-[3rem] shadow-2xl w-full max-w-2xl animate-in" onClick={e => e.stopPropagation()}>
             <h2 className="text-3xl font-black text-blue-500 mb-8 tracking-tighter uppercase flex items-center gap-4"><i className="fa-solid fa-folder-plus"></i> Nueva Placa</h2>
             <div className="space-y-6">
-              <input type="text" value={newBoardData.name} onChange={e => setNewBoardData(prev => ({ ...prev, name: e.target.value }))} placeholder="Nombre del Modelo" className="w-full bg-slate-800 border-2 border-slate-700 rounded-[1.5rem] p-5 text-xl font-bold outline-none focus:border-blue-500 shadow-inner" />
-              <div className="grid grid-cols-2 gap-6">
-                {['A', 'B'].map((s) => (
-                  <label key={s} className="flex flex-col items-center justify-center aspect-video bg-slate-800 border-2 border-dashed border-slate-700 rounded-2xl hover:border-blue-500 cursor-pointer overflow-hidden relative group">
-                    {newBoardData[`image${s}` as 'imageA'|'imageB'] ? (
+              <input type="text" value={newBoardData.name} onChange={e => setNewBoardData(prev => ({ ...prev, name: e.target.value }))} placeholder="Nombre del Modelo" className="w-full bg-slate-800 border-2 border-slate-700 rounded-[1.5rem] p-5 text-xl font-bold outline-none focus:border-blue-500" />
+              <div className="grid grid-cols-2 gap-6">{['A', 'B'].map((s) => (
+                  <label key={s} className="flex flex-col items-center justify-center aspect-video bg-slate-800 border-2 border-dashed border-slate-700 rounded-2xl hover:border-blue-500 cursor-pointer overflow-hidden group transition-all">{newBoardData[`image${s}` as 'imageA'|'imageB'] ? (
                         <img src={newBoardData[`image${s}` as 'imageA'|'imageB']} className="w-full h-full object-cover" />
-                    ) : (
-                        <div className="flex flex-col items-center gap-2 opacity-40 group-hover:opacity-100">
-                            <i className="fa-solid fa-cloud-arrow-up text-3xl"></i>
-                            <span className="text-[10px] font-black uppercase">Foto Lado {s}</span>
-                        </div>
-                    )}
-                    <input type="file" hidden accept="image/*" onChange={(e) => handleImageUpload(e, s as 'A'|'B')} />
-                  </label>
-                ))}
-              </div>
-              <div className="flex gap-4">
-                <button onClick={() => setShowNewBoardModal(false)} className="flex-1 p-4 bg-slate-800 rounded-2xl font-bold uppercase">Cerrar</button>
-                <button onClick={saveNewBoard} className="flex-1 p-4 bg-blue-600 rounded-2xl font-black uppercase shadow-xl shadow-blue-900/40">Crear Proyecto</button>
+                    ) : (<div className="flex flex-col items-center gap-2 opacity-40"><i className="fa-solid fa-cloud-arrow-up text-3xl"></i><span className="text-[10px] font-black uppercase">Foto Lado {s}</span></div>)}<input type="file" hidden accept="image/*" onChange={(e) => handleImageUpload(e, s as 'A'|'B')} /></label>
+                ))}</div>
+              <div className="flex gap-4"><button onClick={() => setShowNewBoardModal(false)} className="flex-1 p-4 bg-slate-800 rounded-2xl font-bold uppercase hover:bg-slate-700">Cerrar</button><button onClick={saveNewBoard} className="flex-1 p-4 bg-blue-600 rounded-2xl font-black uppercase shadow-xl hover:bg-blue-500 active:scale-95">Crear</button></div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showConfirmDeleteHistory && (
+        <div className="fixed inset-0 z-[100] bg-slate-950/95 backdrop-blur-xl flex items-center justify-center p-6" onClick={() => setShowConfirmDeleteHistory(false)}>
+          <div className="bg-slate-900 border border-red-500/30 p-8 rounded-[2rem] shadow-2xl w-full max-w-md animate-in" onClick={e => e.stopPropagation()}>
+            <div className="flex flex-col items-center gap-4 text-center">
+              <div className="w-16 h-16 rounded-full bg-red-500/20 flex items-center justify-center text-red-500 text-2xl animate-pulse"><i className="fa-solid fa-triangle-exclamation"></i></div>
+              <h2 className="text-xl font-black uppercase tracking-widest text-white">¿Borrar Historial Completo?</h2>
+              <p className="text-xs text-slate-400 font-medium">Esta acción eliminará permanentemente todos los registros de fallas y datos de Excel de la placa <span className="text-white font-black">{currentBoard?.name}</span>. No se puede deshacer.</p>
+              <div className="flex gap-4 w-full mt-4">
+                <button onClick={() => setShowConfirmDeleteHistory(false)} className="flex-1 p-3 bg-slate-800 rounded-xl font-bold hover:bg-slate-700 transition-all uppercase text-[10px]">Cancelar</button>
+                <button onClick={deleteFullHistory} className="flex-1 p-3 bg-red-600 rounded-xl font-black hover:bg-red-500 transition-all uppercase text-[10px] shadow-lg shadow-red-600/20">ELIMINAR TODO</button>
               </div>
             </div>
           </div>
@@ -407,40 +555,32 @@ const App: React.FC = () => {
 
       {showCompDialog && (
         <div className="fixed inset-0 z-[100] bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-6">
-          <div className="bg-slate-900 border border-slate-800 p-8 rounded-[2rem] shadow-2xl w-full max-w-sm">
-            <h2 className="text-xl font-black text-blue-500 mb-6 flex items-center gap-3 uppercase"><i className="fa-solid fa-microchip"></i> Identificador</h2>
+          <div className="bg-slate-900 border border-slate-800 p-8 rounded-[2rem] shadow-2xl w-full max-w-sm animate-in">
+            <h2 className="text-xl font-black text-blue-500 mb-6 flex items-center gap-3 uppercase"><i className="fa-solid fa-microchip"></i> Marcador</h2>
             <div className="space-y-5">
                 <input autoFocus type="text" value={newCompName} onChange={e => setNewCompName(e.target.value)} placeholder="Ej: R12, IC4..." className="w-full bg-slate-800 border-2 border-slate-700 rounded-xl p-3 text-sm font-bold outline-none focus:border-blue-500" />
-                <div className="grid grid-cols-2 gap-3">
-                    <button onClick={() => setNewCompType('IA')} className={`p-4 rounded-xl font-black text-[10px] border-2 ${newCompType === 'IA' ? 'bg-blue-600 border-blue-400 shadow-lg' : 'bg-slate-800 border-slate-700 text-slate-500'}`}>AUTO (IA)</button>
-                    <button onClick={() => setNewCompType('IM')} className={`p-4 rounded-xl font-black text-[10px] border-2 ${newCompType === 'IM' ? 'bg-purple-600 border-purple-400 shadow-lg' : 'bg-slate-800 border-slate-700 text-slate-500'}`}>MANUAL (IM)</button>
-                </div>
-                <div className="flex gap-3 pt-4">
-                    <button onClick={() => setShowCompDialog(null)} className="flex-1 p-3 bg-slate-800 rounded-xl font-bold">VOLVER</button>
-                    <button onClick={createComponent} className="flex-1 p-3 bg-blue-600 rounded-xl font-black shadow-xl">LISTO</button>
-                </div>
+                <div className="grid grid-cols-2 gap-3"><button onClick={() => setNewCompType('IA')} className={`p-4 rounded-xl font-black text-[10px] border-2 transition-all ${newCompType === 'IA' ? 'bg-blue-600 border-blue-400 shadow-lg' : 'bg-slate-800 border-slate-700 text-slate-500'}`}>AUTO (IA)</button><button onClick={() => setNewCompType('IM')} className={`p-4 rounded-xl font-black text-[10px] border-2 transition-all ${newCompType === 'IM' ? 'bg-purple-600 border-purple-400 shadow-lg' : 'bg-slate-800 border-slate-700 text-slate-500'}`}>MANUAL (IM)</button></div>
+                <div className="flex gap-3 pt-4"><button onClick={() => setShowCompDialog(null)} className="flex-1 p-3 bg-slate-800 rounded-xl font-bold hover:bg-slate-700">VOLVER</button><button onClick={createComponent} className="flex-1 p-3 bg-blue-600 rounded-xl font-black hover:bg-blue-500">GUARDAR</button></div>
             </div>
           </div>
         </div>
       )}
 
       {contextMenu && (
-        <div className="fixed bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-1 z-[150] w-48 flex flex-col gap-1 ring-1 ring-white/10" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={e => e.stopPropagation()}>
+        <div className="fixed bg-slate-900 border border-slate-700 rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.8)] p-1.5 z-[150] w-48 flex flex-col gap-1 ring-1 ring-white/20 animate-in" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={e => e.stopPropagation()}>
             {GENERIC_DEFECTS.map(def => (
-                <button key={def.id} onClick={() => addGenericMarker(def.id as any, contextMenu.imgX, contextMenu.imgY)} className="flex items-center gap-3 p-2.5 hover:bg-slate-800 rounded-lg transition-all group">
-                    <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${def.color} text-[11px]`}><i className={`fa-solid ${def.icon}`}></i></div>
-                    <span className="text-[10px] font-bold text-slate-300">{def.label}</span>
-                </button>
+                <button key={def.id} onClick={() => addGenericMarker(def.id as any, contextMenu.imgX, contextMenu.imgY)} className="flex items-center gap-3 p-2.5 hover:bg-slate-800 rounded-lg group transition-all"><div className={`w-8 h-8 rounded-lg flex items-center justify-center ${def.color} text-[12px] bg-opacity-70 transition-transform group-hover:scale-110 shadow-sm`}><i className={`fa-solid ${def.icon} text-white`}></i></div><span className="text-[11px] font-bold text-slate-300">{def.label}</span></button>
             ))}
         </div>
       )}
 
-      <footer className="h-8 bg-slate-900 border-t border-slate-800 flex items-center justify-between px-6 text-[8px] font-black text-slate-500 uppercase tracking-widest shrink-0">
+      <footer className="h-8 bg-slate-900 border-t border-slate-800 flex items-center justify-between px-6 text-[9px] font-black text-slate-500 uppercase tracking-widest shrink-0">
         <div className="flex gap-8">
             <span className="flex items-center gap-2"><div className="w-1.5 h-1.5 rounded-full bg-blue-500"></div> PLACA: {currentBoard?.name || '---'}</span>
-            <span className="flex items-center gap-2"><div className="w-1.5 h-1.5 rounded-full bg-emerald-500"></div> LADO ACTUAL: {currentSide}</span>
+            <span className="flex items-center gap-2"><div className="w-1.5 h-1.5 rounded-full bg-indigo-500"></div> LADO ACTUAL: {currentSide}</span>
+            <span className="flex items-center gap-2"><div className={`w-1.5 h-1.5 rounded-full ${showHeatmap ? 'bg-red-500 animate-pulse' : 'bg-slate-700'}`}></div> HEATMAP: {showHeatmap ? 'ON' : 'OFF'}</span>
         </div>
-        <span>INDUSTRIAL PCB INSPECTOR v11.1.3 - BUILT FOR PRECISION</span>
+        <span className="opacity-40">INDUSTRIAL QUALITY CONTROL - PCB INSPECTOR v11.1.12</span>
       </footer>
     </div>
   );
