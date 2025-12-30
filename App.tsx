@@ -217,10 +217,17 @@ const App: React.FC = () => {
     if (!isDragging || !dragStart.current) return;
     e.preventDefault();
     hasMoved.current = true;
+    
+    // Capture values synchronously to avoid null access inside state callback
+    const startX = dragStart.current.x;
+    const startY = dragStart.current.y;
+    const clientX = e.clientX;
+    const clientY = e.clientY;
+
     setTransform(prev => ({
         ...prev,
-        x: e.clientX - dragStart.current!.x,
-        y: e.clientY - dragStart.current!.y
+        x: clientX - startX,
+        y: clientY - startY
     }));
   };
 
