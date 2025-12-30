@@ -14,10 +14,12 @@ const App: React.FC = () => {
   const [isEditMode, setIsEditMode] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [showHeatmap, setShowHeatmap] = useState(false);
+  const [expandedStatId, setExpandedStatId] = useState<string | null>(null); // For sidebar expansion
   
   // Modals / State
   const [showNewBoardModal, setShowNewBoardModal] = useState(false);
   const [showConfirmDeleteHistory, setShowConfirmDeleteHistory] = useState(false);
+  const [showOverwriteModal, setShowOverwriteModal] = useState(false); // For duplicate name check
   const [newBoardData, setNewBoardData] = useState({ name: '', imageA: '', imageB: '' });
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, imgX: number, imgY: number } | null>(null);
   const [showCompDialog, setShowCompDialog] = useState<{ imgX: number, imgY: number } | null>(null);
@@ -71,6 +73,7 @@ const App: React.FC = () => {
     setActiveCompDetail(null);
     setContextMenu(null);
     setSelectedMarkerId(null);
+    setExpandedStatId(null);
   };
 
   const handleBoardSwitch = (id: string) => {
@@ -80,6 +83,7 @@ const App: React.FC = () => {
     setIsAddingComponent(false);
     setActiveBoardId(id);
     setCurrentSide('A');
+    setExpandedStatId(null);
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>, side: 'A' | 'B') => {
@@ -94,11 +98,22 @@ const App: React.FC = () => {
     }
   };
 
-  const saveNewBoard = () => {
+  // Step 1: Check for duplicate name
+  const handleSaveAttempt = () => {
     if (!newBoardData.name.trim()) return alert("Nombre obligatorio");
-    
-    // Safety check for huge images impacting performance
-    if ((newBoardData.imageA && newBoardData.imageA.length > 4000000) || (newBoardData.imageB && newBoardData.imageB.length > 4000000)) {
+
+    const duplicate = boards.find(b => b.name.toLowerCase() === newBoardData.name.trim().toLowerCase());
+    if (duplicate) {
+        setShowOverwriteModal(true);
+    } else {
+        finalizeSaveBoard(false);
+    }
+  };
+
+  // Step 2: Finalize save (with or without overwrite)
+  const finalizeSaveBoard = (overwrite: boolean) => {
+     // Safety check for huge images impacting performance
+     if ((newBoardData.imageA && newBoardData.imageA.length > 4000000) || (newBoardData.imageB && newBoardData.imageB.length > 4000000)) {
         alert("Advertencia: Las imágenes son muy grandes. Es posible que no se guarden si recarga la página debido a límites del navegador.");
     }
 
@@ -112,11 +127,18 @@ const App: React.FC = () => {
       createdAt: Date.now()
     };
     
-    // Critical fix: Ensure state update happens before closing modal
-    setBoards(prev => [...prev, newBoard]);
-    setActiveBoardId(newBoard.id); // Set ID directly
+    setBoards(prev => {
+        let newList = [...prev];
+        if (overwrite) {
+            newList = newList.filter(b => b.name.toLowerCase() !== newBoardData.name.trim().toLowerCase());
+        }
+        return [...newList, newBoard];
+    });
+
+    setActiveBoardId(newBoard.id); 
     setCurrentSide('A');
     setShowNewBoardModal(false);
+    setShowOverwriteModal(false);
     setNewBoardData({ name: '', imageA: '', imageB: '' });
   };
 
@@ -190,6 +212,50 @@ const App: React.FC = () => {
       )
     });
     setActiveCompDetail(null);
+  };
+
+  // Function to decrement defects from Sidebar
+  const decrementDefect = (compId: string, key: keyof DefectCounts | 'generic', e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!currentBoard) return;
+
+    if (key === 'generic') {
+        // Handle generic marker decrement
+        const marker = currentBoard.genericMarkers.find(m => m.id === compId);
+        if (!marker || marker.count <= 0) return;
+        
+        const newHistory = [...marker.history];
+        newHistory.pop(); // Remove last entry
+
+        updateBoard({
+            ...currentBoard,
+            genericMarkers: currentBoard.genericMarkers.map(m => 
+                m.id === compId ? { ...m, count: m.count - 1, history: newHistory } : m
+            )
+        });
+    } else {
+        // Handle component defect decrement
+        const comp = currentBoard.components.find(c => c.id === compId);
+        if (!comp || comp.counts[key] <= 0) return;
+
+        // Remove last occurance of this defect type from history
+        const newHistory = [...comp.history];
+        const lastIndex = newHistory.map(h => h.type).lastIndexOf(key);
+        if (lastIndex !== -1) {
+            newHistory.splice(lastIndex, 1);
+        }
+
+        updateBoard({
+            ...currentBoard,
+            components: currentBoard.components.map(c => 
+                c.id === compId ? { 
+                    ...c, 
+                    counts: { ...c.counts, [key]: c.counts[key] - 1 },
+                    history: newHistory
+                } : c
+            )
+        });
+    }
   };
 
   const handleMarkerResize = (id: string, delta: number, e: React.MouseEvent) => {
@@ -274,6 +340,7 @@ const App: React.FC = () => {
     const list = currentBoard.components
       .filter(c => c.side === currentSide)
       .map(c => ({ 
+          id: c.id,
           name: c.name, 
           total: Object.values(c.counts).reduce((a, b) => a + b, 0), 
           counts: c.counts, // We need individual counts for the breakdown
@@ -281,7 +348,7 @@ const App: React.FC = () => {
       }));
     const generics = currentBoard.genericMarkers
       .filter(m => m.side === currentSide)
-      .map(m => ({ name: m.type, total: m.count, type: 'generic' }));
+      .map(m => ({ id: m.id, name: m.type, total: m.count, type: 'generic' }));
     return [...list, ...generics].filter(s => s.total > 0).sort((a, b) => b.total - a.total);
   }, [currentBoard, currentSide]);
 
@@ -343,10 +410,17 @@ const App: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
+  const formatDate = (date: Date) => {
+    const day = date.getDate().toString().padStart(2, '0');
+    const month = (date.getMonth() + 1).toString().padStart(2, '0');
+    const year = date.getFullYear();
+    return `${day}/${month}/${year}`;
+  };
+
   const exportToExcel = () => {
     if (!currentBoard) return alert("Seleccione una placa para exportar.");
     const now = new Date();
-    const dateStr = now.toLocaleDateString().replace(/\//g, '-');
+    const dateStr = formatDate(now).replace(/\//g, '-');
     const timeStr = now.toLocaleTimeString().replace(/:/g, '-');
     const filename = `LOG_${currentBoard.name.replace(/\s+/g, '_')}_${dateStr}_${timeStr}.csv`;
     const headers = ['Fecha', 'Hora', 'Nombre de Placa', 'Elemento', 'Lado', 'Tipo de Defecto'];
@@ -354,15 +428,15 @@ const App: React.FC = () => {
     currentBoard.components.forEach(c => {
       c.history.forEach(event => {
         const d = new Date(event.timestamp);
-        // Fix: Use 24h format
-        eventRows.push([d.toLocaleDateString(), d.toLocaleTimeString('es-ES', { hour12: false }), currentBoard.name, c.name, c.side, event.type.toUpperCase()]);
+        // Fix: Use 24h format and custom dd/mm/yyyy date
+        eventRows.push([formatDate(d), d.toLocaleTimeString('es-ES', { hour12: false }), currentBoard.name, c.name, c.side, event.type.toUpperCase()]);
       });
     });
     currentBoard.genericMarkers.forEach(m => {
       m.history.forEach(ts => {
         const d = new Date(typeof ts === 'number' ? ts : ts.timestamp);
-        // Fix: Use 24h format and specific generic defect name
-        eventRows.push([d.toLocaleDateString(), d.toLocaleTimeString('es-ES', { hour12: false }), currentBoard.name, m.type, m.side, m.type.toUpperCase()]);
+        // Fix: Use 24h format and custom dd/mm/yyyy date
+        eventRows.push([formatDate(d), d.toLocaleTimeString('es-ES', { hour12: false }), currentBoard.name, m.type, m.side, m.type.toUpperCase()]);
       });
     });
     const csvContent = "\ufeff" + [headers.join(';'), ...eventRows.map(r => r.join(';'))].join('\n');
@@ -404,8 +478,8 @@ const App: React.FC = () => {
                 <i className="fa-solid fa-microchip text-white"></i>
             </div>
             <span className="font-black text-xl tracking-tighter uppercase">PCB<span className="text-blue-500">PRO</span></span>
-            {/* Version indicator V1.2 */}
-            <span className="ml-1 text-[10px] text-slate-500 font-bold bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">V1.2</span>
+            {/* Version indicator V1.3 */}
+            <span className="ml-1 text-[10px] text-slate-500 font-bold bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">V1.3</span>
           </div>
           <div className="flex items-center gap-1 bg-slate-800 p-0.5 rounded-md border border-slate-700">
             <select 
@@ -433,8 +507,9 @@ const App: React.FC = () => {
               <span>LADO {currentSide}</span>
             </button>
             <div className="w-px h-6 bg-slate-800"></div>
+            {/* Added Green Color to Component Icon */}
             <button onClick={() => {setIsAddingComponent(!isAddingComponent); setIsEditMode(false); setContextMenu(null); setActiveCompDetail(null);}} className={`px-4 py-2.5 rounded-lg text-[10px] font-black transition-all flex items-center gap-2 ${isAddingComponent ? 'bg-orange-600 animate-pulse' : 'bg-slate-800 text-slate-400'}`}>
-              <i className="fa-solid fa-plus-circle"></i> COMPONENTE
+              <i className={`fa-solid fa-plus-circle ${isAddingComponent ? 'text-white' : 'text-green-500'}`}></i> COMPONENTE
             </button>
         </div>
 
@@ -461,26 +536,52 @@ const App: React.FC = () => {
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
             {stats.length === 0 ? <div className="flex flex-col items-center justify-center h-full opacity-20 text-center px-4"><p className="text-[10px] font-black uppercase tracking-widest">Placa Limpia</p></div> : stats.map((s, idx) => (
-              <div key={idx} className="bg-slate-800/40 p-3 rounded-xl border border-slate-700/30 flex justify-between items-start animate-in">
-                <div className="flex items-start gap-3 flex-1">
+              <div key={idx} className={`bg-slate-800/40 p-3 rounded-xl border flex flex-col gap-2 transition-all cursor-pointer ${expandedStatId === s.id ? 'border-blue-500/50 bg-slate-800' : 'border-slate-700/30 hover:bg-slate-800/60'}`} onClick={() => setExpandedStatId(expandedStatId === s.id ? null : s.id)}>
+                <div className="flex items-start gap-3">
                   <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-black text-[9px] shrink-0 mt-0.5 ${s.type === 'generic' ? 'bg-emerald-600/20 text-emerald-400' : 'bg-blue-600/20 text-blue-400'}`}>{s.name.substring(0, 3).toUpperCase()}</div>
                   <div className="flex flex-col gap-1 w-full">
                     <div className="flex justify-between items-center w-full">
                         <span className="text-[11px] font-bold text-slate-300">{s.name}</span>
                         <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full shadow-sm" style={{ backgroundColor: getHeatColor(s.total) }}></div><span className="text-xs font-black text-white">{s.total}</span></div>
                     </div>
-                    {/* Detailed Stats Breakdown */}
-                    {s.type === 'component' && (
-                         <div className="text-[9px] text-slate-500 font-mono tracking-tight flex flex-wrap gap-x-2 gap-y-0.5 leading-tight">
-                            {Object.entries((s as any).counts).map(([key, val]) => {
-                                const v = val as number;
-                                if (v > 0) return <span key={key}><span className="text-slate-400 font-bold">{getAbbreviation(key)}:</span> {v}</span>
-                                return null;
-                            })}
-                         </div>
-                    )}
                   </div>
                 </div>
+                {/* Expanded Details with Subtraction Logic */}
+                {expandedStatId === s.id && (
+                    <div className="mt-1 pt-2 border-t border-slate-700/50 space-y-1 animate-in">
+                        {s.type === 'component' ? Object.entries((s as any).counts).map(([key, val]) => {
+                             const v = val as number;
+                             if (v > 0) return (
+                                 <div key={key} className="flex justify-between items-center px-2 py-1 bg-slate-900/50 rounded-lg">
+                                     <span className="text-[10px] font-bold text-slate-400 uppercase">{getAbbreviation(key)}</span>
+                                     <div className="flex items-center gap-2">
+                                         <span className="text-[10px] font-bold">{v}</span>
+                                         <button 
+                                            onClick={(e) => decrementDefect(s.id, key as keyof DefectCounts, e)}
+                                            className="w-5 h-5 flex items-center justify-center bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white rounded transition-colors"
+                                         >
+                                             <i className="fa-solid fa-minus text-[9px]"></i>
+                                         </button>
+                                     </div>
+                                 </div>
+                             );
+                             return null;
+                        }) : (
+                            <div className="flex justify-between items-center px-2 py-1 bg-slate-900/50 rounded-lg">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase">TOTAL</span>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-[10px] font-bold">{s.total}</span>
+                                    <button 
+                                       onClick={(e) => decrementDefect(s.id, 'generic', e)}
+                                       className="w-5 h-5 flex items-center justify-center bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white rounded transition-colors"
+                                    >
+                                        <i className="fa-solid fa-minus text-[9px]"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
               </div>
             ))}
           </div>
@@ -570,7 +671,24 @@ const App: React.FC = () => {
                         <img src={newBoardData[`image${s}` as 'imageA'|'imageB']} className="w-full h-full object-cover" />
                     ) : (<div className="flex flex-col items-center gap-2 opacity-40"><i className="fa-solid fa-cloud-arrow-up text-3xl"></i><span className="text-[10px] font-black uppercase">Foto Lado {s}</span></div>)}<input type="file" hidden accept="image/*" onChange={(e) => handleImageUpload(e, s as 'A'|'B')} /></label>
                 ))}</div>
-              <div className="flex gap-4"><button onClick={() => setShowNewBoardModal(false)} className="flex-1 p-4 bg-slate-800 rounded-2xl font-bold uppercase hover:bg-slate-700">Cerrar</button><button onClick={saveNewBoard} className="flex-1 p-4 bg-blue-600 rounded-2xl font-black uppercase shadow-xl hover:bg-blue-500 active:scale-95">Crear</button></div>
+              <div className="flex gap-4"><button onClick={() => setShowNewBoardModal(false)} className="flex-1 p-4 bg-slate-800 rounded-2xl font-bold uppercase hover:bg-slate-700">Cerrar</button><button onClick={handleSaveAttempt} className="flex-1 p-4 bg-blue-600 rounded-2xl font-black uppercase shadow-xl hover:bg-blue-500 active:scale-95">Crear</button></div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate Name Overwrite Modal */}
+      {showOverwriteModal && (
+        <div className="fixed inset-0 z-[150] bg-slate-950/95 backdrop-blur-xl flex items-center justify-center p-6" onClick={() => setShowOverwriteModal(false)}>
+          <div className="bg-slate-900 border border-yellow-500/30 p-8 rounded-[2rem] shadow-2xl w-full max-w-md animate-in" onClick={e => e.stopPropagation()}>
+            <div className="flex flex-col items-center gap-4 text-center">
+              <div className="w-16 h-16 rounded-full bg-yellow-500/20 flex items-center justify-center text-yellow-500 text-2xl animate-pulse"><i className="fa-solid fa-triangle-exclamation"></i></div>
+              <h2 className="text-xl font-black uppercase tracking-widest text-white">¿Sobrescribir Placa?</h2>
+              <p className="text-xs text-slate-400 font-medium">Ya existe una placa llamada <span className="text-white font-black">"{newBoardData.name}"</span>. Si continúas, se borrarán todos los datos anteriores de esa placa.</p>
+              <div className="flex gap-4 w-full mt-4">
+                <button onClick={() => setShowOverwriteModal(false)} className="flex-1 p-3 bg-slate-800 rounded-xl font-bold hover:bg-slate-700 transition-all uppercase text-[10px]">Cancelar</button>
+                <button onClick={() => finalizeSaveBoard(true)} className="flex-1 p-3 bg-yellow-600 rounded-xl font-black hover:bg-yellow-500 transition-all uppercase text-[10px] shadow-lg shadow-yellow-600/20">SOBRESCRIBIR</button>
+              </div>
             </div>
           </div>
         </div>
