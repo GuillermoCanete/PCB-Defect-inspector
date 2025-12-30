@@ -20,6 +20,7 @@ const App: React.FC = () => {
   const [transform, setTransform] = useState({ scale: 1, x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const dragStart = useRef<{ x: number, y: number } | null>(null);
+  const hasMoved = useRef(false); // Track if actual movement occurred during drag
   
   // Modals / State
   const [showNewBoardModal, setShowNewBoardModal] = useState(false);
@@ -158,17 +159,14 @@ const App: React.FC = () => {
     setSelectedMarkerId(null);
 
     const rect = imageRef.current.getBoundingClientRect();
-    // Calculate click position relative to the image (considering scale/pan)
-    // However, for adding components we want the % relative to the image natural size
-    // The visual rect already includes the transform.
     const x = ((e.clientX - rect.left) / rect.width) * 100;
     const y = ((e.clientY - rect.top) / rect.height) * 100;
     setContextMenu({ x: e.clientX, y: e.clientY, imgX: x, imgY: y });
   };
 
   const handleImageClick = (e: React.MouseEvent) => {
-    // Only handle click if we weren't dragging
-    if (isDragging) return;
+    // Only handle click if we weren't dragging (moved significantly)
+    if (hasMoved.current) return;
 
     if (!imageRef.current || !currentBoard) return;
     const rect = imageRef.current.getBoundingClientRect();
@@ -211,12 +209,14 @@ const App: React.FC = () => {
     if (!currentBoard || e.button !== 0) return; // Only left click
     if (isAddingComponent || isEditMode) return; // Don't pan while editing
     setIsDragging(true);
+    hasMoved.current = false;
     dragStart.current = { x: e.clientX - transform.x, y: e.clientY - transform.y };
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
     if (!isDragging || !dragStart.current) return;
     e.preventDefault();
+    hasMoved.current = true;
     setTransform(prev => ({
         ...prev,
         x: e.clientX - dragStart.current!.x,
@@ -227,6 +227,8 @@ const App: React.FC = () => {
   const handleMouseUp = () => {
     setIsDragging(false);
     dragStart.current = null;
+    // Note: We don't reset hasMoved here immediately to allow Click event to check it
+    setTimeout(() => { hasMoved.current = false; }, 0);
   };
 
   const resetZoom = () => setTransform({ scale: 1, x: 0, y: 0 });
@@ -530,8 +532,8 @@ const App: React.FC = () => {
                 <i className="fa-solid fa-microchip text-white"></i>
             </div>
             <span className="font-black text-xl tracking-tighter uppercase whitespace-nowrap">PCB<span className="text-blue-500">PRO</span></span>
-            {/* Version indicator V1.4 */}
-            <span className="ml-1 text-[10px] text-slate-500 font-bold bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">V1.4</span>
+            {/* Version indicator V1.5 */}
+            <span className="ml-1 text-[10px] text-slate-500 font-bold bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">V1.5</span>
           </div>
           <div className="flex items-center gap-1 bg-slate-800 p-0.5 rounded-md border border-slate-700">
             <select 
@@ -658,6 +660,7 @@ const App: React.FC = () => {
              onMouseUp={handleMouseUp}
              onMouseLeave={handleMouseUp}
              onContextMenu={handleContextMenu}
+             onDragStart={(e) => e.preventDefault()} // Prevent native drag
              ref={containerRef}
           >
             {!currentBoard ? (
@@ -671,7 +674,7 @@ const App: React.FC = () => {
                 style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})` }}
                 onClick={handleImageClick}
               >
-                <img ref={imageRef} src={currentImg} alt="PCB" className={`max-w-full max-h-[calc(100vh-140px)] object-contain rounded-lg shadow-2xl ${showHeatmap ? 'grayscale saturate-[0.15] brightness-[1.1]' : ''}`} draggable={false} />
+                <img ref={imageRef} src={currentImg} alt="PCB" onDragStart={(e) => e.preventDefault()} className={`max-w-full max-h-[calc(100vh-140px)] object-contain rounded-lg shadow-2xl ${showHeatmap ? 'grayscale saturate-[0.15] brightness-[1.1]' : ''}`} draggable={false} />
 
                 {currentBoard.components.filter(c => c.side === currentSide).map(comp => {
                   const total = Object.values(comp.counts).reduce((a, b) => a + b, 0);
