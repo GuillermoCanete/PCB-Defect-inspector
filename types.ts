@@ -5,6 +5,8 @@ export type ComponentType = 'IA' | 'IM';
 export interface DefectEvent {
   type: string;
   timestamp: number;
+  serialNumber?: string;
+  confirmed?: boolean;
 }
 
 export interface DefectCounts {
@@ -13,28 +15,32 @@ export interface DefectCounts {
   equivocado: number;
   levantado: number;
   invertido: number;
+  corto: number;
+  ict: number;
 }
 
 export interface ComponentMarker {
   id: string;
   name: string;
   type: ComponentType;
-  x: number; // percentage 0-100
-  y: number; // percentage 0-100
+  x: number; 
+  y: number; 
   side: Side;
   counts: DefectCounts;
   history: DefectEvent[];
   scale?: number;
+  /* threshold for visual inspection sensitivity */
+  threshold?: number;
 }
 
 export interface GenericDefectMarker {
   id: string;
-  type: 'Corto' | 'Inundado';
+  type: 'Corto' | 'Inundado' | 'Fisura' | 'HotMelt';
   x: number;
   y: number;
   side: Side;
   count: number;
-  history: number[]; // timestamps
+  history: (number | DefectEvent)[];
   scale?: number;
 }
 
@@ -43,12 +49,9 @@ export interface Board {
   name: string;
   imageA: string | null;
   imageB: string | null;
+  goldenA?: string | null; // Imagen de referencia perfecta
+  goldenB?: string | null;
   components: ComponentMarker[];
   genericMarkers: GenericDefectMarker[];
   createdAt: number;
-}
-
-export interface AppConfig {
-  boards: Board[];
-  activeBoardId: string | null;
 }
