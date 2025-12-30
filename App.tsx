@@ -48,9 +48,16 @@ const App: React.FC = () => {
     }
   }, []);
 
+  // Fix: Wrap localStorage in try/catch to prevent crashes with large base64 images
   useEffect(() => {
     if (boards.length > 0 || activeBoardId === null) {
-      localStorage.setItem('pcb_inspector_v11', JSON.stringify({ boards, activeBoardId }));
+      try {
+        localStorage.setItem('pcb_inspector_v11', JSON.stringify({ boards, activeBoardId }));
+      } catch (e) {
+        // QuotaExceededError is common with large images
+        console.error("Storage Limit Exceeded", e);
+        // We don't alert constantly, but this prevents the app from crashing (white/blue screen)
+      }
     }
   }, [boards, activeBoardId]);
 
@@ -89,6 +96,12 @@ const App: React.FC = () => {
 
   const saveNewBoard = () => {
     if (!newBoardData.name.trim()) return alert("Nombre obligatorio");
+    
+    // Safety check for huge images impacting performance
+    if ((newBoardData.imageA && newBoardData.imageA.length > 4000000) || (newBoardData.imageB && newBoardData.imageB.length > 4000000)) {
+        alert("Advertencia: Las imágenes son muy grandes. Es posible que no se guarden si recarga la página debido a límites del navegador.");
+    }
+
     const newBoard: Board = {
       id: Math.random().toString(36).substr(2, 9),
       name: newBoardData.name,
@@ -98,8 +111,11 @@ const App: React.FC = () => {
       genericMarkers: [],
       createdAt: Date.now()
     };
+    
+    // Critical fix: Ensure state update happens before closing modal
     setBoards(prev => [...prev, newBoard]);
-    handleBoardSwitch(newBoard.id);
+    setActiveBoardId(newBoard.id); // Set ID directly
+    setCurrentSide('A');
     setShowNewBoardModal(false);
     setNewBoardData({ name: '', imageA: '', imageB: '' });
   };
@@ -150,7 +166,7 @@ const App: React.FC = () => {
       x: showCompDialog.imgX,
       y: showCompDialog.imgY,
       side: currentSide,
-      counts: { faltante: 0, malInsertado: 0, equivocado: 0, levantado: 0, invertido: 0 },
+      counts: { faltante: 0, malInsertado: 0, equivocado: 0, levantado: 0, invertido: 0, corto: 0, ict: 0 },
       history: [],
       scale: 1
     };
@@ -199,7 +215,7 @@ const App: React.FC = () => {
     setSelectedMarkerId(null);
   };
 
-  const addGenericMarker = (type: 'Corto' | 'Inundado', x: number, y: number) => {
+  const addGenericMarker = (type: 'Corto' | 'Inundado' | 'HotMelt', x: number, y: number) => {
     if (!currentBoard) return;
     const now = Date.now();
     const newMarker: GenericDefectMarker = {
@@ -226,7 +242,7 @@ const App: React.FC = () => {
       ...currentBoard,
       components: currentBoard.components.map(c => ({
         ...c,
-        counts: { faltante: 0, malInsertado: 0, equivocado: 0, levantado: 0, invertido: 0 }
+        counts: { faltante: 0, malInsertado: 0, equivocado: 0, levantado: 0, invertido: 0, corto: 0, ict: 0 }
       })),
       genericMarkers: currentBoard.genericMarkers.map(m => ({ ...m, count: 0 }))
     });
@@ -239,7 +255,7 @@ const App: React.FC = () => {
       ...currentBoard,
       components: currentBoard.components.map(c => ({
         ...c,
-        counts: { faltante: 0, malInsertado: 0, equivocado: 0, levantado: 0, invertido: 0 },
+        counts: { faltante: 0, malInsertado: 0, equivocado: 0, levantado: 0, invertido: 0, corto: 0, ict: 0 },
         history: []
       })),
       genericMarkers: currentBoard.genericMarkers.map(m => ({
@@ -252,11 +268,17 @@ const App: React.FC = () => {
     setActiveCompDetail(null);
   };
 
+  // Modified stats to include detail breakdown
   const stats = useMemo(() => {
     if (!currentBoard) return [];
     const list = currentBoard.components
       .filter(c => c.side === currentSide)
-      .map(c => ({ name: c.name, total: Object.values(c.counts).reduce((a, b) => a + b, 0), type: 'component' }));
+      .map(c => ({ 
+          name: c.name, 
+          total: Object.values(c.counts).reduce((a, b) => a + b, 0), 
+          counts: c.counts, // We need individual counts for the breakdown
+          type: 'component' 
+      }));
     const generics = currentBoard.genericMarkers
       .filter(m => m.side === currentSide)
       .map(m => ({ name: m.type, total: m.count, type: 'generic' }));
@@ -278,6 +300,19 @@ const App: React.FC = () => {
     return `rgb(${red}, ${green}, ${blue})`;
   };
 
+  const getAbbreviation = (id: string) => {
+    const map: Record<string, string> = {
+        faltante: 'FAL',
+        malInsertado: 'MAL',
+        equivocado: 'EQU',
+        levantado: 'LEV',
+        invertido: 'INV',
+        corto: 'CRT',
+        ict: 'ICT'
+    };
+    return map[id] || id.substring(0,3).toUpperCase();
+  };
+
   const currentImg = useMemo(() => {
     if (!currentBoard) return null;
     return currentSide === 'A' ? currentBoard.imageA : currentBoard.imageB;
@@ -289,7 +324,7 @@ const App: React.FC = () => {
       ...currentBoard,
       components: currentBoard.components.map(c => ({
         ...c,
-        counts: { faltante: 0, malInsertado: 0, equivocado: 0, levantado: 0, invertido: 0 },
+        counts: { faltante: 0, malInsertado: 0, equivocado: 0, levantado: 0, invertido: 0, corto: 0, ict: 0 },
         history: []
       })),
       genericMarkers: currentBoard.genericMarkers.map(m => ({ ...m, count: 0, history: [] }))
@@ -319,13 +354,15 @@ const App: React.FC = () => {
     currentBoard.components.forEach(c => {
       c.history.forEach(event => {
         const d = new Date(event.timestamp);
-        eventRows.push([d.toLocaleDateString(), d.toLocaleTimeString(), currentBoard.name, c.name, c.side, event.type.toUpperCase()]);
+        // Fix: Use 24h format
+        eventRows.push([d.toLocaleDateString(), d.toLocaleTimeString('es-ES', { hour12: false }), currentBoard.name, c.name, c.side, event.type.toUpperCase()]);
       });
     });
     currentBoard.genericMarkers.forEach(m => {
       m.history.forEach(ts => {
-        const d = new Date(ts);
-        eventRows.push([d.toLocaleDateString(), d.toLocaleTimeString(), currentBoard.name, m.type, m.side, 'FALLA GENÉRICA']);
+        const d = new Date(typeof ts === 'number' ? ts : ts.timestamp);
+        // Fix: Use 24h format and specific generic defect name
+        eventRows.push([d.toLocaleDateString(), d.toLocaleTimeString('es-ES', { hour12: false }), currentBoard.name, m.type, m.side, m.type.toUpperCase()]);
       });
     });
     const csvContent = "\ufeff" + [headers.join(';'), ...eventRows.map(r => r.join(';'))].join('\n');
@@ -355,26 +392,6 @@ const App: React.FC = () => {
     e.target.value = ''; 
   };
 
-  // Improved detail positioning logic to respect image bounds
-  const [detailPos, setDetailPos] = useState({ x: 'right', y: 'bottom' });
-  useEffect(() => {
-    if (activeCompDetail && detailRef.current && imageRef.current) {
-      const rect = detailRef.current.getBoundingClientRect();
-      const imgRect = imageRef.current.getBoundingClientRect();
-      const newPos = { ...detailPos };
-      
-      // Horizontal check
-      if (rect.right > imgRect.right - 10) newPos.x = 'left';
-      else if (rect.left < imgRect.left + 10) newPos.x = 'right';
-      
-      // Vertical check
-      if (rect.bottom > imgRect.bottom - 10) newPos.y = 'top';
-      else if (rect.top < imgRect.top + 10) newPos.y = 'bottom';
-      
-      setDetailPos(newPos);
-    }
-  }, [activeCompDetail]);
-
   return (
     <div className="h-screen w-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden font-sans">
       <header className="h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-6 z-50 shrink-0 shadow-xl">
@@ -387,6 +404,8 @@ const App: React.FC = () => {
                 <i className="fa-solid fa-microchip text-white"></i>
             </div>
             <span className="font-black text-xl tracking-tighter uppercase">PCB<span className="text-blue-500">PRO</span></span>
+            {/* Version indicator V1.2 */}
+            <span className="ml-1 text-[10px] text-slate-500 font-bold bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">V1.2</span>
           </div>
           <div className="flex items-center gap-1 bg-slate-800 p-0.5 rounded-md border border-slate-700">
             <select 
@@ -427,10 +446,10 @@ const App: React.FC = () => {
             <i className="fa-solid fa-trash-can text-red-500"></i> RESET LOG
           </button>
           <button onClick={() => setShowHeatmap(!showHeatmap)} className={`px-3 py-1.5 rounded-md text-[10px] font-black border transition-all flex items-center gap-2 ${showHeatmap ? 'bg-red-600 border-red-400' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
-            <i className="fa-solid fa-fire"></i> CALOR
+            <i className={`fa-solid fa-fire ${showHeatmap ? 'text-white' : 'text-orange-500'}`}></i> CALOR
           </button>
           <button onClick={() => {setIsEditMode(!isEditMode); setIsAddingComponent(false); setContextMenu(null); setActiveCompDetail(null);}} className={`px-3 py-1.5 rounded-md text-[10px] font-black border transition-all flex items-center gap-2 ${isEditMode ? 'bg-yellow-600 border-yellow-400' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
-            <i className="fa-solid fa-screwdriver-wrench"></i> EDITAR
+            <i className={`fa-solid fa-screwdriver-wrench ${isEditMode ? 'text-white' : 'text-yellow-400'}`}></i> EDITAR
           </button>
         </div>
       </header>
@@ -442,12 +461,26 @@ const App: React.FC = () => {
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
             {stats.length === 0 ? <div className="flex flex-col items-center justify-center h-full opacity-20 text-center px-4"><p className="text-[10px] font-black uppercase tracking-widest">Placa Limpia</p></div> : stats.map((s, idx) => (
-              <div key={idx} className="bg-slate-800/40 p-3 rounded-xl border border-slate-700/30 flex justify-between items-center animate-in">
-                <div className="flex items-center gap-3">
-                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-black text-[9px] ${s.type === 'generic' ? 'bg-emerald-600/20 text-emerald-400' : 'bg-blue-600/20 text-blue-400'}`}>{s.name.substring(0, 3).toUpperCase()}</div>
-                  <span className="text-[11px] font-bold text-slate-300">{s.name}</span>
+              <div key={idx} className="bg-slate-800/40 p-3 rounded-xl border border-slate-700/30 flex justify-between items-start animate-in">
+                <div className="flex items-start gap-3 flex-1">
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-black text-[9px] shrink-0 mt-0.5 ${s.type === 'generic' ? 'bg-emerald-600/20 text-emerald-400' : 'bg-blue-600/20 text-blue-400'}`}>{s.name.substring(0, 3).toUpperCase()}</div>
+                  <div className="flex flex-col gap-1 w-full">
+                    <div className="flex justify-between items-center w-full">
+                        <span className="text-[11px] font-bold text-slate-300">{s.name}</span>
+                        <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full shadow-sm" style={{ backgroundColor: getHeatColor(s.total) }}></div><span className="text-xs font-black text-white">{s.total}</span></div>
+                    </div>
+                    {/* Detailed Stats Breakdown */}
+                    {s.type === 'component' && (
+                         <div className="text-[9px] text-slate-500 font-mono tracking-tight flex flex-wrap gap-x-2 gap-y-0.5 leading-tight">
+                            {Object.entries((s as any).counts).map(([key, val]) => {
+                                const v = val as number;
+                                if (v > 0) return <span key={key}><span className="text-slate-400 font-bold">{getAbbreviation(key)}:</span> {v}</span>
+                                return null;
+                            })}
+                         </div>
+                    )}
+                  </div>
                 </div>
-                <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full shadow-sm" style={{ backgroundColor: getHeatColor(s.total) }}></div><div className="text-sm font-black text-white">{s.total}</div></div>
               </div>
             ))}
           </div>
@@ -469,6 +502,12 @@ const App: React.FC = () => {
                   const isActive = activeCompDetail === comp.id;
                   const heatColor = getHeatColor(total);
 
+                  // Flicker fix: Deterministic positioning based on X coordinate
+                  // If component is on the right half (x > 50), show menu on left.
+                  const detailSide = comp.x > 50 ? 'left' : 'right';
+                  // Fix: if component is near bottom (y > 50), show menu upwards (bottom-0)
+                  const detailVertical = comp.y > 50 ? 'bottom' : 'top';
+
                   return (
                     <div key={comp.id} style={{ left: `${comp.x}%`, top: `${comp.y}%`, transform: `translate(-50%, -50%) scale(${comp.scale || 1})` }} className={`absolute ${isActive || isSelected ? 'z-40' : 'z-20'}`} onClick={(e) => { e.stopPropagation(); if(isEditMode) setSelectedMarkerId(comp.id); else { setActiveCompDetail(comp.id); setContextMenu(null); } }}>
                       {showHeatmap && total > 0 && <div className="absolute inset-0 -m-10 rounded-full blur-3xl opacity-70 animate-pulse" style={{ background: `radial-gradient(circle, ${heatColor} 0%, transparent 70%)` }} />}
@@ -478,7 +517,7 @@ const App: React.FC = () => {
                       </div>
 
                       {isActive && (
-                        <div ref={detailRef} className={`absolute ${detailPos.x === 'right' ? 'left-full ml-5' : 'right-full mr-5'} ${detailPos.y === 'bottom' ? 'top-0' : 'bottom-0'} bg-slate-900 border border-slate-700 rounded-2xl p-4 shadow-[0_10px_50px_rgba(0,0,0,0.6)] w-56 z-[70] animate-in ring-1 ring-white/10`} onClick={e => e.stopPropagation()}>
+                        <div ref={detailRef} className={`absolute ${detailSide === 'left' ? 'right-full mr-3' : 'left-full ml-3'} ${detailVertical === 'bottom' ? 'bottom-0' : 'top-0'} bg-slate-900 border border-slate-700 rounded-2xl p-4 shadow-[0_10px_50px_rgba(0,0,0,0.6)] w-56 z-[70] animate-in ring-1 ring-white/10`} onClick={e => e.stopPropagation()}>
                           <div className="flex justify-between items-center mb-4 border-b border-slate-800 pb-2"><span className="text-[10px] font-black text-blue-400 uppercase tracking-widest">{comp.name}</span><button onClick={() => setActiveCompDetail(null)} className="text-slate-500 hover:text-white"><i className="fa-solid fa-xmark"></i></button></div>
                           <div className="grid gap-2">{DEFECT_TYPES.map(d => (
                               <button key={d.id} onClick={(e) => updateDefect(comp.id, d.id as any, e)} className={`flex justify-between items-center ${d.color} hover:brightness-125 px-3 py-2.5 rounded-xl text-[10px] font-black transition-all active:scale-95 shadow-md`}><span>{d.label}</span><span className="bg-black/40 px-2 py-0.5 rounded-lg">{comp.counts[d.id as keyof DefectCounts]}</span></button>
@@ -503,7 +542,7 @@ const App: React.FC = () => {
                     return (
                         <div key={mark.id} style={{ left: `${mark.x}%`, top: `${mark.y}%`, transform: `translate(-50%, -50%) scale(${mark.scale || 1})` }} className={`absolute ${isSelected ? 'z-40' : 'z-20'}`} onClick={(e) => { e.stopPropagation(); if(isEditMode) setSelectedMarkerId(mark.id); else { incrementGeneric(mark.id, e); setContextMenu(null); setActiveCompDetail(null); } }}>
                           {showHeatmap && mark.count > 0 && <div className="absolute inset-0 -m-10 rounded-full blur-3xl opacity-70 animate-pulse" style={{ background: `radial-gradient(circle, ${heatColor} 0%, transparent 70%)` }} />}
-                          <div className={`relative w-9 h-9 rounded-xl flex items-center justify-center shadow-2xl border-2 ${isSelected ? 'border-yellow-400 scale-125 ring-2 ring-yellow-400/30' : 'border-white/20'} ${mark.type === 'Corto' ? 'bg-emerald-600' : 'bg-cyan-600'} ${showHeatmap ? 'bg-opacity-100' : 'bg-opacity-50'} backdrop-blur-[1px]`} style={showHeatmap && mark.count > 0 ? { backgroundColor: heatColor } : {}}><i className={`fa-solid ${mark.type === 'Corto' ? 'fa-bolt' : 'fa-droplet'} text-sm text-white drop-shadow-md`}></i><div className="absolute -bottom-2 -right-2 bg-black text-[10px] font-black px-2 py-0.5 rounded-full border border-slate-700 shadow-md">{mark.count}</div></div>
+                          <div className={`relative w-9 h-9 rounded-xl flex items-center justify-center shadow-2xl border-2 ${isSelected ? 'border-yellow-400 scale-125 ring-2 ring-yellow-400/30' : 'border-white/20'} ${mark.type === 'Corto' ? 'bg-emerald-600' : 'bg-cyan-600'} ${showHeatmap ? 'bg-opacity-100' : 'bg-opacity-50'} backdrop-blur-[1px]`} style={showHeatmap && mark.count > 0 ? { backgroundColor: heatColor } : {}}><i className={`fa-solid ${mark.type === 'Corto' ? 'fa-bolt' : mark.type === 'HotMelt' ? 'fa-fill-drip' : 'fa-droplet'} text-sm text-white drop-shadow-md`}></i><div className="absolute -bottom-2 -right-2 bg-black text-[10px] font-black px-2 py-0.5 rounded-full border border-slate-700 shadow-md">{mark.count}</div></div>
                           {isEditMode && isSelected && (
                             <div className="absolute -bottom-14 left-1/2 -translate-x-1/2 flex gap-1.5 bg-slate-900 rounded-full p-1.5 border border-white/20 shadow-2xl animate-in">
                                 <button onClick={(e) => handleMarkerResize(mark.id, -0.1, e)} className="w-8 h-8 flex items-center justify-center bg-slate-800 hover:bg-red-500 rounded-full text-xs"><i className="fa-solid fa-minus"></i></button>
@@ -568,6 +607,12 @@ const App: React.FC = () => {
 
       {contextMenu && (
         <div className="fixed bg-slate-900 border border-slate-700 rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.8)] p-1.5 z-[150] w-48 flex flex-col gap-1 ring-1 ring-white/20 animate-in" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={e => e.stopPropagation()}>
+             {/* Replaced Corto with Create Component */}
+            <button onClick={() => { setShowCompDialog({ imgX: contextMenu.imgX, imgY: contextMenu.imgY }); setContextMenu(null); }} className="flex items-center gap-3 p-2.5 hover:bg-slate-800 rounded-lg group transition-all">
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-blue-600 text-[12px] bg-opacity-70 transition-transform group-hover:scale-110 shadow-sm"><i className="fa-solid fa-microchip text-white"></i></div>
+                <span className="text-[11px] font-bold text-slate-300">Nuevo Componente</span>
+            </button>
+            
             {GENERIC_DEFECTS.map(def => (
                 <button key={def.id} onClick={() => addGenericMarker(def.id as any, contextMenu.imgX, contextMenu.imgY)} className="flex items-center gap-3 p-2.5 hover:bg-slate-800 rounded-lg group transition-all"><div className={`w-8 h-8 rounded-lg flex items-center justify-center ${def.color} text-[12px] bg-opacity-70 transition-transform group-hover:scale-110 shadow-sm`}><i className={`fa-solid ${def.icon} text-white`}></i></div><span className="text-[11px] font-bold text-slate-300">{def.label}</span></button>
             ))}
