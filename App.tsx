@@ -16,6 +16,11 @@ const App: React.FC = () => {
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [expandedStatId, setExpandedStatId] = useState<string | null>(null); // For sidebar expansion
   
+  // Zoom & Pan State
+  const [transform, setTransform] = useState({ scale: 1, x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStart = useRef<{ x: number, y: number } | null>(null);
+  
   // Modals / State
   const [showNewBoardModal, setShowNewBoardModal] = useState(false);
   const [showConfirmDeleteHistory, setShowConfirmDeleteHistory] = useState(false);
@@ -31,6 +36,7 @@ const App: React.FC = () => {
   const imageRef = useRef<HTMLImageElement>(null);
   const detailRef = useRef<HTMLDivElement>(null);
   const importFileRef = useRef<HTMLInputElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const currentBoard = useMemo(() => {
     if (!activeBoardId || boards.length === 0) return null;
@@ -74,6 +80,7 @@ const App: React.FC = () => {
     setContextMenu(null);
     setSelectedMarkerId(null);
     setExpandedStatId(null);
+    setTransform({ scale: 1, x: 0, y: 0 }); // Reset zoom on side switch
   };
 
   const handleBoardSwitch = (id: string) => {
@@ -84,6 +91,7 @@ const App: React.FC = () => {
     setActiveBoardId(id);
     setCurrentSide('A');
     setExpandedStatId(null);
+    setTransform({ scale: 1, x: 0, y: 0 }); // Reset zoom on board switch
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>, side: 'A' | 'B') => {
@@ -150,12 +158,18 @@ const App: React.FC = () => {
     setSelectedMarkerId(null);
 
     const rect = imageRef.current.getBoundingClientRect();
+    // Calculate click position relative to the image (considering scale/pan)
+    // However, for adding components we want the % relative to the image natural size
+    // The visual rect already includes the transform.
     const x = ((e.clientX - rect.left) / rect.width) * 100;
     const y = ((e.clientY - rect.top) / rect.height) * 100;
     setContextMenu({ x: e.clientX, y: e.clientY, imgX: x, imgY: y });
   };
 
   const handleImageClick = (e: React.MouseEvent) => {
+    // Only handle click if we weren't dragging
+    if (isDragging) return;
+
     if (!imageRef.current || !currentBoard) return;
     const rect = imageRef.current.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 100;
@@ -178,6 +192,46 @@ const App: React.FC = () => {
       setSelectedMarkerId(null);
     }
   };
+
+  // --- Zoom & Pan Logic ---
+
+  const handleWheel = (e: React.WheelEvent) => {
+    if (!currentBoard) return;
+    // e.preventDefault(); // React synthetic events can't always prevent default passive listeners
+    const scaleAmount = -e.deltaY * 0.002;
+    const newScale = Math.min(Math.max(0.5, transform.scale + scaleAmount), 5);
+    
+    setTransform(prev => ({
+        ...prev,
+        scale: newScale
+    }));
+  };
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (!currentBoard || e.button !== 0) return; // Only left click
+    if (isAddingComponent || isEditMode) return; // Don't pan while editing
+    setIsDragging(true);
+    dragStart.current = { x: e.clientX - transform.x, y: e.clientY - transform.y };
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging || !dragStart.current) return;
+    e.preventDefault();
+    setTransform(prev => ({
+        ...prev,
+        x: e.clientX - dragStart.current!.x,
+        y: e.clientY - dragStart.current!.y
+    }));
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+    dragStart.current = null;
+  };
+
+  const resetZoom = () => setTransform({ scale: 1, x: 0, y: 0 });
+
+  // ------------------------
 
   const createComponent = () => {
     if (!showCompDialog || !newCompName.trim() || !currentBoard) return;
@@ -428,14 +482,12 @@ const App: React.FC = () => {
     currentBoard.components.forEach(c => {
       c.history.forEach(event => {
         const d = new Date(event.timestamp);
-        // Fix: Use 24h format and custom dd/mm/yyyy date
         eventRows.push([formatDate(d), d.toLocaleTimeString('es-ES', { hour12: false }), currentBoard.name, c.name, c.side, event.type.toUpperCase()]);
       });
     });
     currentBoard.genericMarkers.forEach(m => {
       m.history.forEach(ts => {
         const d = new Date(typeof ts === 'number' ? ts : ts.timestamp);
-        // Fix: Use 24h format and custom dd/mm/yyyy date
         eventRows.push([formatDate(d), d.toLocaleTimeString('es-ES', { hour12: false }), currentBoard.name, m.type, m.side, m.type.toUpperCase()]);
       });
     });
@@ -468,8 +520,8 @@ const App: React.FC = () => {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden font-sans">
-      <header className="h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-6 z-50 shrink-0 shadow-xl">
-        <div className="flex items-center gap-4">
+      <header className="h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-6 z-50 shrink-0 shadow-xl overflow-x-auto no-scrollbar">
+        <div className="flex items-center gap-4 shrink-0">
           <button onClick={() => setShowStats(!showStats)} title="Estadísticas" className={`w-9 h-9 rounded-md flex items-center justify-center transition-all ${showStats ? 'bg-blue-600' : 'bg-slate-800 border border-slate-700'}`}>
             <i className="fa-solid fa-chart-simple text-sm"></i>
           </button>
@@ -477,9 +529,9 @@ const App: React.FC = () => {
             <div className="w-9 h-9 bg-blue-600 rounded-lg flex items-center justify-center shadow-lg">
                 <i className="fa-solid fa-microchip text-white"></i>
             </div>
-            <span className="font-black text-xl tracking-tighter uppercase">PCB<span className="text-blue-500">PRO</span></span>
-            {/* Version indicator V1.3 */}
-            <span className="ml-1 text-[10px] text-slate-500 font-bold bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">V1.3</span>
+            <span className="font-black text-xl tracking-tighter uppercase whitespace-nowrap">PCB<span className="text-blue-500">PRO</span></span>
+            {/* Version indicator V1.4 */}
+            <span className="ml-1 text-[10px] text-slate-500 font-bold bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">V1.4</span>
           </div>
           <div className="flex items-center gap-1 bg-slate-800 p-0.5 rounded-md border border-slate-700">
             <select 
@@ -496,34 +548,34 @@ const App: React.FC = () => {
             <button onClick={() => importFileRef.current?.click()} title="Importar Configuración" className="p-2 hover:text-blue-400 transition-colors"><i className="fa-solid fa-upload text-xs"></i></button>
             <input type="file" hidden ref={importFileRef} accept=".json" onChange={handleImportConfig} />
           </div>
-          <button onClick={() => setShowNewBoardModal(true)} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-md text-[10px] font-black uppercase transition-all flex items-center gap-2 shadow-lg">
+          <button onClick={() => setShowNewBoardModal(true)} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-md text-[10px] font-black uppercase transition-all flex items-center gap-2 shadow-lg whitespace-nowrap">
               <i className="fa-solid fa-plus"></i> NUEVA
           </button>
         </div>
 
-        <div className="flex items-center bg-black/40 p-1 rounded-xl gap-2 border border-white/5">
-            <button onClick={toggleSide} className={`flex items-center gap-3 px-6 py-2.5 rounded-lg text-xs font-black transition-all shadow-lg ${currentSide === 'A' ? 'bg-indigo-600' : 'bg-purple-600'}`}>
+        <div className="flex items-center bg-black/40 p-1 rounded-xl gap-2 border border-white/5 shrink-0 mx-4">
+            <button onClick={toggleSide} className={`flex items-center gap-3 px-6 py-2.5 rounded-lg text-xs font-black transition-all shadow-lg whitespace-nowrap ${currentSide === 'A' ? 'bg-indigo-600' : 'bg-purple-600'}`}>
               <i className="fa-solid fa-rotate"></i>
               <span>LADO {currentSide}</span>
             </button>
             <div className="w-px h-6 bg-slate-800"></div>
-            {/* Added Green Color to Component Icon */}
-            <button onClick={() => {setIsAddingComponent(!isAddingComponent); setIsEditMode(false); setContextMenu(null); setActiveCompDetail(null);}} className={`px-4 py-2.5 rounded-lg text-[10px] font-black transition-all flex items-center gap-2 ${isAddingComponent ? 'bg-orange-600 animate-pulse' : 'bg-slate-800 text-slate-400'}`}>
+            <button onClick={() => {setIsAddingComponent(!isAddingComponent); setIsEditMode(false); setContextMenu(null); setActiveCompDetail(null);}} className={`px-4 py-2.5 rounded-lg text-[10px] font-black transition-all flex items-center gap-2 whitespace-nowrap ${isAddingComponent ? 'bg-orange-600 animate-pulse' : 'bg-slate-800 text-slate-400'}`}>
               <i className={`fa-solid fa-plus-circle ${isAddingComponent ? 'text-white' : 'text-green-500'}`}></i> COMPONENTE
+            </button>
+            {/* Heatmap moved here */}
+            <button onClick={() => setShowHeatmap(!showHeatmap)} className={`px-3 py-1.5 rounded-md text-[10px] font-black border transition-all flex items-center gap-2 whitespace-nowrap ${showHeatmap ? 'bg-red-600 border-red-400 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
+                <i className={`fa-solid fa-fire ${showHeatmap ? 'text-white' : 'text-orange-500'}`}></i> CALOR
             </button>
         </div>
 
-        <div className="flex items-center gap-2">
-          <button onClick={clearVisualCounters} title="Limpiar conteos visuales (Mantiene historial)" className="px-3 py-1.5 rounded-md text-[10px] font-black bg-slate-800 border border-slate-700 hover:border-yellow-500 transition-all flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
+          <button onClick={clearVisualCounters} title="Limpiar conteos visuales (Mantiene historial)" className="px-3 py-1.5 rounded-md text-[10px] font-black bg-slate-800 border border-slate-700 hover:border-yellow-500 transition-all flex items-center gap-2 whitespace-nowrap">
             <i className="fa-solid fa-broom text-yellow-500"></i> LIMPIAR VISTA
           </button>
-          <button onClick={() => setShowConfirmDeleteHistory(true)} title="Eliminar todo el historial de fallas" className="px-3 py-1.5 rounded-md text-[10px] font-black bg-slate-800 border border-slate-700 hover:border-red-500 transition-all flex items-center gap-2">
+          <button onClick={() => setShowConfirmDeleteHistory(true)} title="Eliminar todo el historial de fallas" className="px-3 py-1.5 rounded-md text-[10px] font-black bg-slate-800 border border-slate-700 hover:border-red-500 transition-all flex items-center gap-2 whitespace-nowrap">
             <i className="fa-solid fa-trash-can text-red-500"></i> RESET LOG
           </button>
-          <button onClick={() => setShowHeatmap(!showHeatmap)} className={`px-3 py-1.5 rounded-md text-[10px] font-black border transition-all flex items-center gap-2 ${showHeatmap ? 'bg-red-600 border-red-400' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
-            <i className={`fa-solid fa-fire ${showHeatmap ? 'text-white' : 'text-orange-500'}`}></i> CALOR
-          </button>
-          <button onClick={() => {setIsEditMode(!isEditMode); setIsAddingComponent(false); setContextMenu(null); setActiveCompDetail(null);}} className={`px-3 py-1.5 rounded-md text-[10px] font-black border transition-all flex items-center gap-2 ${isEditMode ? 'bg-yellow-600 border-yellow-400' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
+          <button onClick={() => {setIsEditMode(!isEditMode); setIsAddingComponent(false); setContextMenu(null); setActiveCompDetail(null);}} className={`px-3 py-1.5 rounded-md text-[10px] font-black border transition-all flex items-center gap-2 whitespace-nowrap ${isEditMode ? 'bg-yellow-600 border-yellow-400' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
             <i className={`fa-solid fa-screwdriver-wrench ${isEditMode ? 'text-white' : 'text-yellow-400'}`}></i> EDITAR
           </button>
         </div>
@@ -544,6 +596,16 @@ const App: React.FC = () => {
                         <span className="text-[11px] font-bold text-slate-300">{s.name}</span>
                         <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full shadow-sm" style={{ backgroundColor: getHeatColor(s.total) }}></div><span className="text-xs font-black text-white">{s.total}</span></div>
                     </div>
+                    {/* Always visible summary */}
+                    {s.type === 'component' && (
+                         <div className="text-[9px] text-slate-500 font-mono tracking-tight flex flex-wrap gap-x-2 gap-y-0.5 leading-tight">
+                            {Object.entries((s as any).counts).map(([key, val]) => {
+                                const v = val as number;
+                                if (v > 0) return <span key={key}><span className="text-slate-400 font-bold">{getAbbreviation(key)}:</span> {v}</span>
+                                return null;
+                            })}
+                         </div>
+                    )}
                   </div>
                 </div>
                 {/* Expanded Details with Subtraction Logic */}
@@ -588,14 +650,28 @@ const App: React.FC = () => {
         </aside>
 
         <main className={`flex-1 relative flex flex-col transition-all duration-300 ${showStats ? 'ml-72' : 'ml-0'}`}>
-          <div className="flex-1 relative flex items-center justify-center p-8 bg-black overflow-hidden" onClick={handleImageClick} onContextMenu={handleContextMenu}>
+          <div 
+             className={`flex-1 relative flex items-center justify-center bg-black overflow-hidden cursor-${isDragging ? 'grabbing' : 'default'}`}
+             onWheel={handleWheel}
+             onMouseDown={handleMouseDown}
+             onMouseMove={handleMouseMove}
+             onMouseUp={handleMouseUp}
+             onMouseLeave={handleMouseUp}
+             onContextMenu={handleContextMenu}
+             ref={containerRef}
+          >
             {!currentBoard ? (
               <div className="flex flex-col items-center gap-6 opacity-30 animate-pulse"><i className="fa-solid fa-microchip text-[120px]"></i><h2 className="text-2xl font-black uppercase tracking-widest">Seleccione Proyecto</h2></div>
             ) : !currentImg ? (
               <div className="bg-slate-900/50 border-4 border-dashed border-slate-800 p-16 rounded-[4rem] flex flex-col items-center gap-6 text-center"><h3 className="text-xl font-black text-slate-500 uppercase">Falta Imagen Lado {currentSide}</h3></div>
             ) : (
-              <div className="relative inline-block max-w-full max-h-full select-none">
-                <img ref={imageRef} src={currentImg} alt="PCB" className={`max-w-full max-h-[calc(100vh-140px)] object-contain rounded-lg shadow-2xl transition-all duration-700 ${showHeatmap ? 'grayscale saturate-[0.15] brightness-[1.1]' : ''}`} draggable={false} />
+               // Wrapper for Pan/Zoom Transformation
+              <div 
+                className="relative inline-block origin-center transition-transform duration-75 ease-out select-none"
+                style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})` }}
+                onClick={handleImageClick}
+              >
+                <img ref={imageRef} src={currentImg} alt="PCB" className={`max-w-full max-h-[calc(100vh-140px)] object-contain rounded-lg shadow-2xl ${showHeatmap ? 'grayscale saturate-[0.15] brightness-[1.1]' : ''}`} draggable={false} />
 
                 {currentBoard.components.filter(c => c.side === currentSide).map(comp => {
                   const total = Object.values(comp.counts).reduce((a, b) => a + b, 0);
@@ -655,6 +731,15 @@ const App: React.FC = () => {
                     );
                 })}
               </div>
+            )}
+            
+            {/* Zoom Controls Overlay */}
+            {currentBoard && currentImg && (
+                <div className="absolute bottom-6 right-6 flex flex-col gap-2 z-50">
+                    <button onClick={() => setTransform(t => ({...t, scale: Math.min(5, t.scale + 0.5)}))} className="w-10 h-10 bg-slate-800/80 backdrop-blur border border-slate-600 rounded-lg text-white hover:bg-blue-600 transition-colors shadow-xl flex items-center justify-center"><i className="fa-solid fa-plus"></i></button>
+                    <button onClick={() => setTransform(t => ({...t, scale: Math.max(0.5, t.scale - 0.5)}))} className="w-10 h-10 bg-slate-800/80 backdrop-blur border border-slate-600 rounded-lg text-white hover:bg-blue-600 transition-colors shadow-xl flex items-center justify-center"><i className="fa-solid fa-minus"></i></button>
+                    <button onClick={resetZoom} className="w-10 h-10 bg-slate-800/80 backdrop-blur border border-slate-600 rounded-lg text-white hover:bg-blue-600 transition-colors shadow-xl flex items-center justify-center" title="Reset Zoom"><i className="fa-solid fa-compress"></i></button>
+                </div>
             )}
           </div>
         </main>
