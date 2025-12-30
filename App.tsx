@@ -49,7 +49,7 @@ const App: React.FC = () => {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (parsed.boards && Array.isArray(parsed.boards)) {
+        if (parsed && parsed.boards && Array.isArray(parsed.boards)) {
           setBoards(parsed.boards);
           if (parsed.activeBoardId) setActiveBoardId(parsed.activeBoardId);
         }
@@ -65,7 +65,6 @@ const App: React.FC = () => {
       } catch (e) {
         // QuotaExceededError is common with large images
         console.error("Storage Limit Exceeded", e);
-        // We don't alert constantly, but this prevents the app from crashing (white/blue screen)
       }
     }
   }, [boards, activeBoardId]);
@@ -214,11 +213,21 @@ const App: React.FC = () => {
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDragging || !dragStart.current) return;
+    // 1. Prevent default to stop browser native drag
     e.preventDefault();
+
+    // 2. Safety check: If not dragging, exit
+    if (!isDragging) return;
+
+    // 3. CRITICAL FIX: If dragStart.current is null (race condition), stop dragging immediately
+    if (!dragStart.current) {
+        setIsDragging(false);
+        return;
+    }
+
     hasMoved.current = true;
     
-    // Capture values synchronously to avoid null access inside state callback
+    // 4. Capture values synchronously
     const startX = dragStart.current.x;
     const startY = dragStart.current.y;
     const clientX = e.clientX;
@@ -232,8 +241,10 @@ const App: React.FC = () => {
   };
 
   const handleMouseUp = () => {
-    setIsDragging(false);
-    dragStart.current = null;
+    if (isDragging) {
+        setIsDragging(false);
+        dragStart.current = null;
+    }
     // Note: We don't reset hasMoved here immediately to allow Click event to check it
     setTimeout(() => { hasMoved.current = false; }, 0);
   };
@@ -539,8 +550,8 @@ const App: React.FC = () => {
                 <i className="fa-solid fa-microchip text-white"></i>
             </div>
             <span className="font-black text-xl tracking-tighter uppercase whitespace-nowrap">PCB<span className="text-blue-500">PRO</span></span>
-            {/* Version indicator V1.5 */}
-            <span className="ml-1 text-[10px] text-slate-500 font-bold bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">V1.5</span>
+            {/* Version indicator V1.6 */}
+            <span className="ml-1 text-[10px] text-slate-500 font-bold bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">V1.6</span>
           </div>
           <div className="flex items-center gap-1 bg-slate-800 p-0.5 rounded-md border border-slate-700">
             <select 
